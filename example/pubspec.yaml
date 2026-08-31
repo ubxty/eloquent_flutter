@@ -1,0 +1,18 @@
+name: eloquent_flutter_example
+description: Demo app for the eloquent_flutter package.
+publish_to: none
+version: 0.1.0
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  eloquent_flutter:
+    path: ..
+  drift: ^2.18.0
+  sqlite3: ^2.0.0
+
+dev_dependencies:
+  build_runner: ^2.4.13
+  drift_dev: ^2.18.0
+  lints: ^3.0.0

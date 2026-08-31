@@ -1,0 +1,25 @@
+.dart_tool/
+.packages
+build/
+.idea/
+.vscode/
+*.iml
+pubspec.lock
+example_app/
+
+# AI-tooling scratch
+.claude/
+CLAUDE.md
+AGENTS.md
+.aider*
+.cursor/
+.cursorrules
+.windsurf/
+.continue/
+.cline/
+.cody/
+.tabnine/
+.codeium/
+.copilot/
+*anthropic*
+*claude*
