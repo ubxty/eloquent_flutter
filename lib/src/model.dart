@@ -85,6 +85,13 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
 
   final Map<String, Object?> _loadedRelations = <String, Object?>{};
 
+  // ===== Internal: "quiet" flag for individual saves / deletes =====
+
+  /// When true, the in-flight [save] / [delete] call skips observer
+  /// dispatch on this instance. Flipped by [saveQuietly] / [deleteQuietly]
+  /// around the operation and reset in `finally`.
+  bool _quiet = false;
+
   /// Returns the eagerly-loaded relation value (set by `with_(...)`), or
   /// null if it has not been loaded yet.
   Object? getLoaded(String name) => _loadedRelations[name];
@@ -214,7 +221,7 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
   Future<T> save() async {
     final pkValue = $primaryKeyValue;
     if (pkValue == null) {
-      if (!dispatchCancelable('creating', this)) {
+      if (!_quiet && !dispatchCancelable('creating', this)) {
         cancelOperation('creating', this);
       }
       final id = await Eloquent.db.into($table).insert(
@@ -236,10 +243,10 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
       // the new state.
       $data = wrapped.$data;
       _snapshotOriginal();
-      dispatchVoid('created', this);
+      if (!_quiet) dispatchVoid('created', this);
       return wrapped;
     } else {
-      if (!dispatchCancelable('updating', this)) {
+      if (!_quiet && !dispatchCancelable('updating', this)) {
         cancelOperation('updating', this);
       }
       final stmt = Eloquent.db.update($table)
@@ -254,7 +261,7 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
         ),
       );
       _snapshotOriginal();
-      dispatchVoid('updated', this);
+      if (!_quiet) dispatchVoid('updated', this);
       return this as T;
     }
   }
@@ -300,7 +307,7 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
         'Cannot delete() a model with no primary-key value.',
       );
     }
-    if (!dispatchCancelable('deleting', this)) {
+    if (!_quiet && !dispatchCancelable('deleting', this)) {
       cancelOperation('deleting', this);
     }
     final stmt = Eloquent.db.delete($table)
@@ -308,7 +315,7 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
               $primaryKey)
           .equals(pkValue));
     await stmt.go();
-    dispatchVoid('deleted', this);
+    if (!_quiet) dispatchVoid('deleted', this);
   }
 
   /// Re-fetch this model's row from the database. Mutates `$data` in place.
@@ -328,6 +335,55 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
     $data = row;
     _snapshotOriginal();
     return this as T;
+  }
+
+  // ===== Quiet variants =====
+
+  /// Like [save] but no lifecycle observers fire. Useful for seeding and
+  /// migrations where the per-row hook overhead is unwanted.
+  Future<T> saveQuietly() async {
+    _quiet = true;
+    try {
+      return await save();
+    } finally {
+      _quiet = false;
+    }
+  }
+
+  /// Like [delete] but no lifecycle observers fire.
+  Future<void> deleteQuietly() async {
+    _quiet = true;
+    try {
+      await delete();
+    } finally {
+      _quiet = false;
+    }
+  }
+
+  // ===== Global event suppression =====
+
+  /// Run [action] with every lifecycle observer globally suppressed.
+  ///
+  /// Inside the callback, both per-instance quiet flags and the global
+  /// muted switch combine: no `creating` / `created` / `updating` /
+  /// `updated` / `deleting` / `deleted` hook will fire. The switch is
+  /// restored in a `finally`, so a thrown error inside [action] still
+  /// leaves subsequent operations firing normally.
+  ///
+  /// Example:
+  ///
+  ///     await Model.withoutEvents(() async {
+  ///       for (final row in seedRows) {
+  ///         await User.create(row);
+  ///       }
+  ///     });
+  static Future<T> withoutEvents<T>(Future<T> Function() action) async {
+    setEventsMuted(true);
+    try {
+      return await action();
+    } finally {
+      setEventsMuted(false);
+    }
   }
 
   /// Helper used by [ModelQuery.create]: wraps a freshly-inserted row and

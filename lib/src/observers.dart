@@ -4,6 +4,25 @@ library;
 import 'exceptions.dart';
 import 'model.dart';
 
+// ===== Global "events muted" switch =====
+//
+// When set to `true` via [setEventsMuted] (or by wrapping a block in
+// `Model.withoutEvents(...)`), [dispatchCancelable] and [dispatchVoid]
+// become no-ops. Useful for seeders, migrations, and bulk imports where
+// firing per-row observers is expensive or unwanted.
+bool _muted = false;
+
+/// True while a `Model.withoutEvents(...)` block (or any caller of
+/// [setEventsMuted]) is in effect.
+bool get isEventsMuted => _muted;
+
+/// Set the global muted flag. Prefer `Model.withoutEvents(...)` over
+/// calling this directly — this exists so the static helper on Model
+/// can flip the switch.
+void setEventsMuted(bool value) {
+  _muted = value;
+}
+
 /// Lifecycle hooks fired before/after CRUD operations.
 ///
 /// Two registration styles are supported:
@@ -47,6 +66,10 @@ class ObserverSet {
 /// Static methods take precedence. Returning `false` from any cancelable
 /// hook aborts the operation.
 bool dispatchCancelable(String stage, Model model) {
+  // When events are globally muted (see [Model.withoutEvents] /
+  // [setEventsMuted]), short-circuit and let the operation proceed.
+  if (isEventsMuted) return true;
+
   // Static method takes precedence.
   try {
     final method = _findStatic(model, stage);
@@ -69,6 +92,8 @@ bool dispatchCancelable(String stage, Model model) {
 
 /// Dispatch the [stage] hook on [model] for after-the-fact hooks.
 void dispatchVoid(String stage, Model model) {
+  if (isEventsMuted) return;
+
   try {
     final method = _findStatic(model, stage);
     if (method != null) {

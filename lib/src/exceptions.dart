@@ -63,6 +63,21 @@ class UnsupportedOperatorException extends EloquentException {
   final List<String> supported;
 }
 
+/// Thrown by `QueryBuilder.sole()` when more than one row matches the
+/// query (i.e. when exactly one was expected).
+class MultipleRecordsFoundException extends EloquentException {
+  MultipleRecordsFoundException({
+    required this.modelName,
+    required this.count,
+  }) : super(
+          'Multiple records ($count) found for $modelName '
+          'where exactly one was expected.',
+        );
+
+  final String modelName;
+  final int count;
+}
+
 /// Thrown when `with_('xxx')` references a relation not declared in
 /// `$relations`.
 class RelationNotFoundException extends EloquentException {

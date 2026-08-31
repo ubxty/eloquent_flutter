@@ -223,6 +223,111 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
     return row.read<int>('c');
   }
 
+  /// Pluck a single column's value from each matching row.
+  ///
+  /// If [key] is null, returns a `List<dynamic>` of column values (one
+  /// per row, in query order). If [key] is given, returns a
+  /// `Map<dynamic, T>` keyed by the [key] column's value on each row.
+  Future<dynamic> pluck(String column, [String? key]) async {
+    // Validate columns up front so the user gets ColumnNotFoundException
+    // instead of a silent null on a typo.
+    _colByName(column);
+    if (key != null) _colByName(key);
+
+    final models = await _runWithEagerLoad();
+    if (key == null) {
+      return <dynamic>[
+        for (final m in models) m.toMap()[column],
+      ];
+    }
+    return <dynamic, T>{
+      for (final m in models) m.toMap()[key]: m,
+    };
+  }
+
+  /// Single value of [column] from the first matching row, or null if
+  /// there are no rows. Equivalent to `first()?.toMap()[column]`.
+  Future<Object?> value(String column) async {
+    final model = await first();
+    if (model == null) return null;
+    return model.toMap()[column];
+  }
+
+  /// Run the query and assert that exactly one row matches.
+  ///
+  /// Throws [ModelNotFoundException] if zero rows match.
+  /// Throws [MultipleRecordsFoundException] if more than one row matches.
+  Future<T> sole() async {
+    final models = await _runWithEagerLoad();
+    if (models.isEmpty) {
+      throw ModelNotFoundException(
+        modelName: T.toString(),
+        id: '<sole>',
+      );
+    }
+    if (models.length > 1) {
+      throw MultipleRecordsFoundException(
+        modelName: T.toString(),
+        count: models.length,
+      );
+    }
+    return models.first;
+  }
+
+  /// Smallest value of [column] across the table. The column type must
+  /// be INTEGER-compatible — calling on a REAL column will surface a
+  /// SQLite type error. Use [sum] for a `num`-typed aggregate over
+  /// numeric columns.
+  Future<int> min(String column) async {
+    _colByName(column);
+    final stmt = Eloquent.db.customSelect(
+      'SELECT MIN("$column") AS v FROM '
+      '"${(table as TableInfo<Table, Object>).actualTableName}"',
+      readsFrom: {table},
+    );
+    final row = await stmt.getSingle();
+    return row.read<int>('v');
+  }
+
+  /// Largest value of [column] across the table. See [min] for column-type
+  /// caveats.
+  Future<int> max(String column) async {
+    _colByName(column);
+    final stmt = Eloquent.db.customSelect(
+      'SELECT MAX("$column") AS v FROM '
+      '"${(table as TableInfo<Table, Object>).actualTableName}"',
+      readsFrom: {table},
+    );
+    final row = await stmt.getSingle();
+    return row.read<int>('v');
+  }
+
+  /// Arithmetic mean of [column]. Returns `double.nan` if the table is
+  /// empty (SQL AVG over zero rows is NULL).
+  Future<double> avg(String column) async {
+    _colByName(column);
+    final stmt = Eloquent.db.customSelect(
+      'SELECT AVG("$column") AS v FROM '
+      '"${(table as TableInfo<Table, Object>).actualTableName}"',
+      readsFrom: {table},
+    );
+    final row = await stmt.getSingle();
+    return row.read<double?>('v') ?? double.nan;
+  }
+
+  /// Total of [column] across the table. Returns `0` if the table is
+  /// empty (SQL SUM over zero rows is NULL).
+  Future<num> sum(String column) async {
+    _colByName(column);
+    final stmt = Eloquent.db.customSelect(
+      'SELECT SUM("$column") AS v FROM '
+      '"${(table as TableInfo<Table, Object>).actualTableName}"',
+      readsFrom: {table},
+    );
+    final row = await stmt.getSingle();
+    return row.read<num?>('v') ?? 0;
+  }
+
   Future<bool> exists() async {
     final stmt = _buildStatement();
     _applyTo(stmt);
