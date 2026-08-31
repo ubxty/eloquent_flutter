@@ -10,6 +10,7 @@ import 'exceptions.dart';
 import 'internal/column_lookup.dart';
 import 'observers.dart';
 import 'relationships/relationship.dart';
+import 'timestamps.dart';
 
 /// Base class for every eloquent model.
 ///
@@ -224,10 +225,11 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
       if (!_quiet && !dispatchCancelable('creating', this)) {
         cancelOperation('creating', this);
       }
+      final values = _timestampValues(toMap(), isInsert: true);
       final id = await Eloquent.db.into($table).insert(
             CompanionBuilder.fromMap(
               table: $table,
-              values: toMapWithPending(),
+              values: values,
               nullToAbsent: true,
             ),
           );
@@ -249,6 +251,7 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
       if (!_quiet && !dispatchCancelable('updating', this)) {
         cancelOperation('updating', this);
       }
+      final values = _timestampValues(toMap(), isInsert: false);
       final stmt = Eloquent.db.update($table)
         ..where((_) => resolveColumn($table as TableInfo<Table, Object>,
                 $primaryKey)
@@ -256,7 +259,7 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
       await stmt.write(
         CompanionBuilder.fromMap(
           table: $table,
-          values: toMapWithPending(),
+          values: values,
           nullToAbsent: true,
         ),
       );
@@ -264,6 +267,23 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
       if (!_quiet) dispatchVoid('updated', this);
       return this as T;
     }
+  }
+
+  /// Build a values map that has had timestamp columns applied (when this
+  /// model opts in via `WithTimestamps`). For non-timestamped models this
+  /// is a straight copy of [base] so the call sites stay simple.
+  Map<String, dynamic> _timestampValues(
+    Map<String, dynamic> base, {
+    required bool isInsert,
+  }) {
+    if (this is WithTimestamps) {
+      return WithTimestamps.applyTo(
+        Map<String, dynamic>.from(base),
+        isInsert: isInsert,
+        table: $table,
+      );
+    }
+    return Map<String, dynamic>.from(base);
   }
 
   /// Update this model's row with [values] merged into the current data,

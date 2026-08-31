@@ -1,6 +1,8 @@
 /// Auto-managed `created_at` / `updated_at` mixin.
 library;
 
+import 'package:drift/drift.dart';
+
 import 'internal/column_lookup.dart';
 import 'model.dart';
 
@@ -28,26 +30,34 @@ mixin WithTimestamps {
   /// Implementations typically re-fetch from the database.
   Future<void> persistTimestamps();
 
-  bool get _hasCreatedAt => _safeHasColumn('created_at');
-  bool get _hasUpdatedAt => _safeHasColumn('updated_at');
-
-  bool _safeHasColumn(String name) {
-    try {
-      // TableInfo is invariant in D, so TableInfo<Table, D> is not a subtype
-      // of TableInfo<Table, Object>. Coerce through dynamic.
-      return hasColumn(model.$table, name);
-    } catch (_) {
-      return false;
+  /// Apply timestamps to [values] directly using [table] as the schema
+  /// reference. The same logic as [applyTimestamps] but callable from places
+  /// (e.g. `Model.save`) that don't go through the mixin instance methods.
+  ///
+  /// Mutates and returns [values]. No-ops if the table is missing one or
+  /// both timestamp columns.
+  static Map<String, dynamic> applyTo(
+    Map<String, dynamic> values, {
+    required bool isInsert,
+    required TableInfo<Table, Object> table,
+  }) {
+    if (hasColumn(table, 'updated_at')) {
+      values['updated_at'] = DateTime.now();
     }
+    if (isInsert &&
+        values['created_at'] == null &&
+        hasColumn(table, 'created_at')) {
+      values['created_at'] = DateTime.now();
+    }
+    return values;
   }
 
   /// Apply timestamps to [map] before persistence. Mutates in place.
   void applyTimestamps(Map<String, dynamic> map, {required bool isInsert}) {
-    if (isInsert && map['created_at'] == null && _hasCreatedAt) {
-      map['created_at'] = DateTime.now();
-    }
-    if (_hasUpdatedAt) {
-      map['updated_at'] = DateTime.now();
-    }
+    WithTimestamps.applyTo(
+      map,
+      isInsert: isInsert,
+      table: model.$table,
+    );
   }
 }

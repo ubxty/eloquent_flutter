@@ -194,10 +194,122 @@ class ModelQuery<T extends Model<T, D>, D extends Object> {
         primaryKey: primaryKey,
       );
 
+  // ===== Find-or-create / upsert =====
+
+  /// Search for the first row matching [attributes]; if none exists, insert
+  /// a new row built from `attributes + creating` merged and return the
+  /// wrapped model.
+  ///
+  /// Equivalent to Laravel's `Model::firstOrCreate()`. Fires the `created`
+  /// observer when a new row is inserted (the insert path goes through
+  /// [create]).
+  Future<T> firstOrCreate(
+    Map<String, dynamic> attributes, [
+    Map<String, dynamic> creating = const {},
+  ]) async {
+    final found = await _findFirstByAttributes(attributes);
+    if (found != null) return found;
+    final merged = <String, dynamic>{...attributes, ...creating};
+    return create(merged);
+  }
+
+  /// Like [firstOrCreate] but does not persist a missing row. The returned
+  /// model is a wrapped instance — the underlying row is removed before
+  /// return so no DB state remains, but the in-memory instance is populated
+  /// so callers can mutate it and call [Model.save] to insert.
+  Future<T> firstOrNew(
+    Map<String, dynamic> attributes, [
+    Map<String, dynamic> creating = const {},
+  ]) async {
+    final found = await _findFirstByAttributes(attributes);
+    if (found != null) return found;
+    final merged = <String, dynamic>{...attributes, ...creating};
+    // Insert briefly to obtain a populated wrapped instance, then delete
+    // so the row never persists. We bypass [create]'s observer dispatch
+    // because the row is not actually saved — matches Laravel's semantics
+    // where `firstOrNew` does not fire `created`. The rollback delete also
+    // skips the model-level `deleting`/`deleted` observers so a custom
+    // observer can't accidentally fail the call.
+    final model = await _insertAndFetch(merged);
+    final pkValue = model.$primaryKeyValue;
+    if (pkValue != null) {
+      final stmt = Eloquent.db.delete(table)
+        ..where((_) => _pkColumn().equals(pkValue));
+      await stmt.go();
+    }
+    return model;
+  }
+
+  /// Search for the first row matching [attributes]; if found, update it
+  /// with [values] (relative to its current state). Otherwise insert a
+  /// fresh row using `attributes + values` merged.
+  Future<T> updateOrCreate(
+    Map<String, dynamic> attributes,
+    Map<String, dynamic> values,
+  ) async {
+    final found = await _findFirstByAttributes(attributes);
+    if (found != null) {
+      await found.update(values);
+      return found;
+    }
+    final merged = <String, dynamic>{...attributes, ...values};
+    return create(merged);
+  }
+
+  /// Upsert [rows] using Drift's `insertOnConflictUpdate`. [uniqueBy] is
+  /// accepted for Laravel API parity — Drift's `insertOnConflictUpdate`
+  /// always resolves conflicts on the table's primary key, so the
+  /// `uniqueBy` columns are not used in the current implementation.
+  Future<int> upsert(
+    List<Map<String, dynamic>> rows, [
+    List<String> uniqueBy = const [],
+  ]) async {
+    if (rows.isEmpty) return 0;
+    for (final row in rows) {
+      await Eloquent.db.into(table).insertOnConflictUpdate(
+        CompanionBuilder.fromMap(
+          table: table,
+          values: row,
+          nullToAbsent: true,
+        ),
+      );
+    }
+    return rows.length;
+  }
+
   // ===== internal =====
 
   GeneratedColumn<Object> _pkColumn() => _colByName(primaryKey);
 
   GeneratedColumn<Object> _colByName(String name) =>
       resolveColumn(table as TableInfo<Table, Object>, name);
+
+  /// Lookup helper: returns the first row matching the k=v predicates in
+  /// [attributes]. ANDed together; empty map returns the first row of the
+  /// table (matching Laravel's `firstOrCreate([])` semantics).
+  Future<T?> _findFirstByAttributes(Map<String, dynamic> attributes) async {
+    var q = query();
+    for (final entry in attributes.entries) {
+      q = q.where(entry.key, entry.value);
+    }
+    return q.first();
+  }
+
+  /// Insert a row from [values] and return the wrapped model without
+  /// firing the `created` observer. Used by `firstOrNew` so we can roll
+  /// the row back before returning.
+  Future<T> _insertAndFetch(Map<String, dynamic> values) async {
+    final id = await Eloquent.db.into(table).insert(
+          CompanionBuilder.fromMap(
+            table: table,
+            values: values,
+            nullToAbsent: true,
+          ),
+        );
+    final stmt = Eloquent.db.select(table)
+      ..where((_) => _pkColumn().equals(id))
+      ..limit(1);
+    final row = await stmt.getSingle();
+    return creator(row);
+  }
 }
