@@ -39,6 +39,10 @@ class ObserverSet {
     this.updated,
     this.deleting,
     this.deleted,
+    this.restoring,
+    this.restored,
+    this.forceDeleting,
+    this.forceDeleted,
   });
 
   /// Return `false` to cancel the operation.
@@ -58,7 +62,41 @@ class ObserverSet {
 
   /// Fired after a successful DELETE.
   final void Function(Model)? deleted;
+
+  /// Return `false` to cancel the restore.
+  final bool Function(Model)? restoring;
+
+  /// Fired after a soft-deletable model has been restored.
+  final void Function(Model)? restored;
+
+  /// Return `false` to cancel the hard-delete.
+  final bool Function(Model)? forceDeleting;
+
+  /// Fired after a soft-deletable model has been permanently deleted.
+  final void Function(Model)? forceDeleted;
 }
+
+/// Stage names for which a `false` return aborts the operation.
+///
+/// Mirrors the `ObserverSet` cancelable hooks.
+const Set<String> kCancelableStages = {
+  'creating',
+  'updating',
+  'deleting',
+  'restoring',
+  'forceDeleting',
+};
+
+/// Stage names that run after the operation succeeds.
+///
+/// Mirrors the `ObserverSet` void hooks.
+const Set<String> kAfterStages = {
+  'created',
+  'updated',
+  'deleted',
+  'restored',
+  'forceDeleted',
+};
 
 /// Dispatch the [stage] hook on [model], combining the static method
 /// (if any) and the registry (if any).
@@ -119,6 +157,10 @@ Function? _findStatic(Model model, String stage) {
       'updated' => dyn.updated as Function?,
       'deleting' => dyn.deleting as Function?,
       'deleted' => dyn.deleted as Function?,
+      'restoring' => dyn.restoring as Function?,
+      'restored' => dyn.restored as Function?,
+      'forceDeleting' => dyn.forceDeleting as Function?,
+      'forceDeleted' => dyn.forceDeleted as Function?,
       _ => null,
     };
   } catch (_) {
@@ -131,6 +173,8 @@ bool Function(Model)? _cancelableHook(ObserverSet s, String stage) {
     'creating' => s.creating,
     'updating' => s.updating,
     'deleting' => s.deleting,
+    'restoring' => s.restoring,
+    'forceDeleting' => s.forceDeleting,
     _ => null,
   };
 }
@@ -140,6 +184,8 @@ void Function(Model)? _voidHook(ObserverSet s, String stage) {
     'created' => s.created,
     'updated' => s.updated,
     'deleted' => s.deleted,
+    'restored' => s.restored,
+    'forceDeleted' => s.forceDeleted,
     _ => null,
   };
 }

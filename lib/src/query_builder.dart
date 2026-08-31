@@ -41,6 +41,12 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   int _offset = 0;
   final List<String> _eagerLoad = <String>[];
 
+  // ===== Soft-delete flags =====
+  // Default behaviour (both false) matches Laravel: when the table has a
+  // `deleted_at` column, soft-deleted rows are excluded automatically.
+  bool _includeTrashed = false;
+  bool _onlyTrashed = false;
+
   // ===== Chainable =====
 
   QueryBuilder<T, D> where(
@@ -95,6 +101,40 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
 
   QueryBuilder<T, D> whereRaw(Expression<bool> expr) {
     _predicates.add(expr);
+    return this;
+  }
+
+  /// Include soft-deleted rows in the result set.
+  ///
+  /// Cancels the implicit `deleted_at IS NULL` filter applied when the
+  /// table has a `deleted_at` column. On tables without that column, this
+  /// is a no-op.
+  QueryBuilder<T, D> withTrashed() {
+    _includeTrashed = true;
+    _onlyTrashed = false;
+    return this;
+  }
+
+  /// Only return soft-deleted rows.
+  ///
+  /// Throws [ModelNotSoftDeletableException] if the underlying table has
+  /// no `deleted_at` column.
+  QueryBuilder<T, D> onlyTrashed() {
+    final typed = table as TableInfo<Table, Object>;
+    if (!hasColumn(typed, 'deleted_at')) {
+      throw ModelNotSoftDeletableException(
+        table: typed.actualTableName,
+      );
+    }
+    _onlyTrashed = true;
+    _includeTrashed = false;
+    return this;
+  }
+
+  /// Explicitly exclude soft-deleted rows (the default behaviour).
+  QueryBuilder<T, D> withoutTrashed() {
+    _includeTrashed = false;
+    _onlyTrashed = false;
     return this;
   }
 
@@ -405,6 +445,10 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   }
 
   void _applyTo(SimpleSelectStatement<Table, D> stmt) {
+    final trashedExpr = _trashedExpression();
+    if (trashedExpr != null) {
+      stmt.where((_) => trashedExpr);
+    }
     for (final p in _predicates) {
       stmt.where((_) => p);
     }
@@ -481,6 +525,24 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
 
   GeneratedColumn<Object> _colByName(String name) =>
       resolveColumn(table as TableInfo<Table, Object>, name);
+
+  /// Returns the soft-delete predicate derived from the `_includeTrashed`
+  /// / `_onlyTrashed` flags, or `null` to leave the query alone.
+  ///
+  /// Resolves to `null` whenever the table does not have a `deleted_at`
+  /// column — soft-delete filtering is opt-in based on schema.
+  Expression<bool>? _trashedExpression() {
+    final typed = table as TableInfo<Table, Object>;
+    if (!hasColumn(typed, 'deleted_at')) return null;
+    final col = resolveColumn(typed, 'deleted_at');
+    if (_onlyTrashed) {
+      return col.isNotNull();
+    }
+    if (!_includeTrashed) {
+      return col.isNull();
+    }
+    return null;
+  }
 }
 
 class _OrderClause {

@@ -21,4 +21,5 @@ export 'src/relationships/relationship.dart';
 export 'src/schema/blueprint.dart';
 export 'src/schema/migrator.dart';
 export 'src/schema/schema.dart';
+export 'src/soft_deletes.dart';
 export 'src/timestamps.dart';

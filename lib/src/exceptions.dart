@@ -115,3 +115,15 @@ class OperationCancelledException extends EloquentException {
 class InvalidArgumentException extends EloquentException {
   InvalidArgumentException(super.message);
 }
+
+/// Thrown when a soft-delete operation targets a table that does not have
+/// a `deleted_at` column.
+class ModelNotSoftDeletableException extends EloquentException {
+  ModelNotSoftDeletableException({required this.table})
+      : super(
+          'Table "$table" does not have a "deleted_at" column and is '
+          'not soft-deletable.',
+        );
+
+  final String table;
+}

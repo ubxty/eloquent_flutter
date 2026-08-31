@@ -277,6 +277,40 @@ class ModelQuery<T extends Model<T, D>, D extends Object> {
     return rows.length;
   }
 
+  // ===== Soft deletes =====
+
+  /// Start a chain that includes soft-deleted rows.
+  QueryBuilder<T, D> withTrashed() => query().withTrashed();
+
+  /// Start a chain that only returns soft-deleted rows.
+  QueryBuilder<T, D> onlyTrashed() => query().onlyTrashed();
+
+  /// Start a chain that excludes soft-deleted rows (the default).
+  QueryBuilder<T, D> withoutTrashed() => query().withoutTrashed();
+
+  /// Mass-restore: set `deleted_at = NULL` on every soft-deleted row.
+  ///
+  /// Throws [ModelNotSoftDeletableException] when the table does not
+  /// have a `deleted_at` column.
+  Future<int> restore() {
+    final typed = table as TableInfo<Table, Object>;
+    if (!hasColumn(typed, 'deleted_at')) {
+      throw ModelNotSoftDeletableException(
+        table: typed.actualTableName,
+      );
+    }
+    final col = resolveColumn(typed, 'deleted_at');
+    final stmt = Eloquent.db.update(table)
+      ..where((_) => col.isNotNull());
+    return stmt.write(
+      CompanionBuilder.fromMap(
+        table: table,
+        values: {'deleted_at': null},
+        nullToAbsent: false,
+      ),
+    );
+  }
+
   // ===== internal =====
 
   GeneratedColumn<Object> _pkColumn() => _colByName(primaryKey);
