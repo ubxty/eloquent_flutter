@@ -3,6 +3,7 @@ library;
 
 import 'package:drift/drift.dart';
 
+import 'casts/casts.dart';
 import 'companion_builder.dart';
 import 'eloquent.dart';
 import 'exceptions.dart';
@@ -15,10 +16,16 @@ import 'relationships/relationship.dart';
 /// Each subclass declares its own `D` (the drift row data type) and `T`
 /// (itself, used for covariant return types).
 abstract class Model<T extends Model<T, D>, D extends Object> {
-  Model(this.$data);
+  Model(this.$data) {
+    _snapshotOriginal();
+  }
 
   /// The current row data. Re-assign after a save/update to refresh.
   D $data;
+
+  /// Pending attribute writes staged via [setAttribute]. Read by
+  /// [getAttribute] / [toMapWithPending] and cleared by `_snapshotOriginal`.
+  final Map<String, Object?> _pending = <String, Object?>{};
 
   // ===== Abstract / overridable =====
 
@@ -36,6 +43,29 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
   ///
   /// The keys must match the column names in `$table.columnsByName`.
   Map<String, dynamic> toMap();
+
+  /// Like [toMap] but with any pending [setAttribute] writes applied on
+  /// top. Used internally by [save] and [update] to compute the
+  /// persistence payload.
+  Map<String, dynamic> toMapWithPending() {
+    final base = toMap();
+    if (_pending.isEmpty) return base;
+    final merged = Map<String, dynamic>.from(base)..addAll(_pending);
+    return merged;
+  }
+
+  /// Registry of per-column casts. Keys are column names, values are
+  /// [CastType] constants (`'int'`, `'json'`, `'datetime'`, etc.).
+  ///
+  /// Override in your subclass:
+  ///
+  ///     @override
+  ///     Map<String, String> get $casts => {
+  ///       'age': 'int',
+  ///       'is_admin': 'bool',
+  ///       'meta': 'json',
+  ///     };
+  Map<String, String> get $casts => const {};
 
   /// Registry of relationships, keyed by the string used in `with_(...)`.
   ///
@@ -73,6 +103,106 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
   /// The value of the primary-key column for this row.
   Object? get $primaryKeyValue => toMap()[$primaryKey];
 
+  // ===== Attribute accessors with cast support =====
+
+  /// Read a column by [key], applying the cast registered in [$casts].
+  ///
+  /// Pending writes from [setAttribute] shadow the underlying `$data`
+  /// value. Returns null if the underlying value is null and no pending
+  /// write exists. Throws [InvalidArgumentException] if [key] is not a
+  /// column on this model's table.
+  Object? getAttribute(String key) {
+    _ensureColumnExists(key);
+    if (_pending.containsKey(key)) {
+      final pending = _pending[key];
+      final typeName = $casts[key];
+      return typeName == null ? pending : Casts.cast(pending, typeName);
+    }
+    final raw = toMap()[key];
+    final typeName = $casts[key];
+    if (typeName == null) return raw;
+    return Casts.cast(raw, typeName);
+  }
+
+  /// Write [value] to column [key], applying the inverse cast registered
+  /// in [$casts].
+  ///
+  /// The value is staged in a pending-writes map and does not mutate
+  /// `$data` directly (Drift row classes are immutable). [save] /
+  /// [update] / [toMapWithPending] apply the pending writes.
+  /// Marks the column dirty and records the change for [wasChanged].
+  ///
+  /// Throws [InvalidArgumentException] if [key] is not a column on this
+  /// model's table.
+  void setAttribute(String key, Object? value) {
+    _ensureColumnExists(key);
+    final typeName = $casts[key];
+    _pending[key] = typeName == null ? value : Casts.uncast(value, typeName);
+    _dirty.add(key);
+    _changes.add(key);
+  }
+
+  // ===== Dirty / original tracking =====
+
+  final Map<String, Object?> _original = <String, Object?>{};
+  final Set<String> _dirty = <String>{};
+  final Set<String> _changes = <String>{};
+
+  /// Snapshot of `$data` taken the last time `save()` / `update()` /
+  /// `refresh()` (or model construction) completed successfully. Used by
+  /// [getOriginal], [isDirty], [isClean], and [wasChanged].
+  Map<String, Object?> get $original => Map.unmodifiable(_original);
+
+  /// Columns whose current value differs from the snapshot in
+  /// [$original]. Cleared by `save()` / `refresh()`.
+  Set<String> get $dirty => Set.unmodifiable(_dirty);
+
+  /// Columns that have been written via [setAttribute] since the last
+  /// snapshot, regardless of whether the value actually changed.
+  /// Cleared by `save()` / `refresh()`.
+  Set<String> get $changes => Set.unmodifiable(_changes);
+
+  /// True if [key] has been mutated since the last snapshot.
+  ///
+  /// When called without arguments, returns true if any column is dirty.
+  bool isDirty([String? key]) {
+    if (key == null) return _dirty.isNotEmpty;
+    return _dirty.contains(key);
+  }
+
+  /// Inverse of [isDirty]. Returns true if [key] (or every column, when
+  /// called without an argument) is clean.
+  bool isClean([String? key]) => !isDirty(key);
+
+  /// True if [key] (or any column) was written via [setAttribute] during
+  /// the most recent lifecycle (between snapshots). Same semantics as
+  /// Laravel's `$model->wasChanged`.
+  bool wasChanged([String? key]) {
+    if (key == null) return _changes.isNotEmpty;
+    return _changes.contains(key);
+  }
+
+  /// The value of [key] at the last snapshot. Returns `null` for unknown
+  /// columns or unset values.
+  Object? getOriginal(String key) {
+    if (!_original.containsKey(key)) {
+      _ensureColumnExists(key);
+    }
+    return _original[key];
+  }
+
+  /// Take a fresh snapshot of the current `$data`, flush pending writes,
+  /// and clear dirty / changes state. Called by `save()` / `update()` /
+  /// `refresh()`.
+  void _snapshotOriginal() {
+    _original
+      ..clear()
+      ..addAll(toMap());
+    _pending.clear();
+    _dirty.clear();
+    _changes.clear();
+  }
+
   // ===== Instance CRUD =====
 
   /// Save this model. Inserts if there is no primary-key value, otherwise
@@ -90,7 +220,7 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
       final id = await Eloquent.db.into($table).insert(
             CompanionBuilder.fromMap(
               table: $table,
-              values: toMap(),
+              values: toMapWithPending(),
               nullToAbsent: true,
             ),
           );
@@ -105,6 +235,7 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
       // Mutate in place so callers holding the original reference see
       // the new state.
       $data = wrapped.$data;
+      _snapshotOriginal();
       dispatchVoid('created', this);
       return wrapped;
     } else {
@@ -118,10 +249,11 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
       await stmt.write(
         CompanionBuilder.fromMap(
           table: $table,
-          values: toMap(),
+          values: toMapWithPending(),
           nullToAbsent: true,
         ),
       );
+      _snapshotOriginal();
       dispatchVoid('updated', this);
       return this as T;
     }
@@ -133,7 +265,8 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
     if (!dispatchCancelable('updating', this)) {
       cancelOperation('updating', this);
     }
-    final merged = Map<String, dynamic>.from(toMap())..addAll(values);
+    final merged = Map<String, dynamic>.from(toMapWithPending())
+      ..addAll(values);
     // Strip the PK so it doesn't get overwritten.
     merged.remove($primaryKey);
     final pkValue = $primaryKeyValue;
@@ -193,9 +326,29 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
       ..limit(1);
     final row = await stmt.getSingle();
     $data = row;
+    _snapshotOriginal();
     return this as T;
   }
 
-  /// Helper used by [ModelQuery.create]: wraps a freshly-inserted row.
-  T wrap(D data) => $wrap(data);
+  /// Helper used by [ModelQuery.create]: wraps a freshly-inserted row and
+  /// takes a baseline snapshot.
+  T wrap(D data) {
+    final wrapped = $wrap(data);
+    wrapped._snapshotOriginal();
+    return wrapped;
+  }
+
+  // ===== internal: column introspection =====
+
+  /// Throw [InvalidArgumentException] if [key] is not a column on the
+  /// underlying Drift table.
+  void _ensureColumnExists(String key) {
+    final tableObj = $table as TableInfo<Table, Object>;
+    if (!hasColumn(tableObj, key)) {
+      throw InvalidArgumentException(
+        'Column "$key" is not defined on table '
+        '"${tableObj.actualTableName}".',
+      );
+    }
+  }
 }

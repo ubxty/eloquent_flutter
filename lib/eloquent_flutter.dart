@@ -3,6 +3,7 @@
 /// See the README for the quick-start and full API reference.
 library eloquent_flutter;
 
+export 'src/casts/casts.dart';
 export 'src/companion_builder.dart';
 export 'src/eloquent.dart';
 export 'src/exceptions.dart';
