@@ -14,6 +14,39 @@ import 'operators.dart';
 import 'paginator.dart';
 import 'relationships/relationship.dart';
 
+/// Metadata describing one relation declared on this builder.
+///
+/// Pass a `Map<String, RelationSpec>` to [QueryBuilder]'s `relations`
+/// parameter to enable the `has` / `whereHas` / `withCount` / `withSum` /
+/// `withAvg` / `withMin` / `withMax` chainable methods. Keys are the same
+/// strings you would pass to `with_('posts')`; values identify the related
+/// Drift table and the foreign-key column on it.
+///
+/// ## Foreign-key convention
+///
+/// Each spec carries its own `foreignKey` and `localKey` so the user can
+/// be explicit. The Laravel-style registry (`Model.$relations`) is richer
+/// (it also gives you the model wrapper and a `creator` callback), but it
+/// requires a model *instance*; this builder does not have one, so the
+/// metadata is supplied explicitly per-call.
+class RelationSpec {
+  /// Construct a spec describing one relation.
+  const RelationSpec({
+    required this.relatedTable,
+    required this.foreignKey,
+    this.localKey = 'id',
+  });
+
+  /// The Drift table of the related model.
+  final TableInfo<Table, Object> relatedTable;
+
+  /// The foreign-key column on [relatedTable] pointing back at the parent.
+  final String foreignKey;
+
+  /// The local-key column on the parent table. Defaults to `'id'`.
+  final String localKey;
+}
+
 /// A chainable Eloquent-style query builder.
 ///
 /// Implements Drift's [Selectable] so the underlying `.get()` / `.watch()`
@@ -24,7 +57,8 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
     required this.table,
     required this.creator,
     this.primaryKey = 'id',
-  });
+    Map<String, RelationSpec>? relations,
+  }) : _relations = relations ?? const <String, RelationSpec>{};
 
   /// The underlying Drift table.
   final TableInfo<Table, D> table;
@@ -35,11 +69,17 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   /// Primary-key column name.
   final String primaryKey;
 
+  /// Relation registry, captured at construction time. Used by `has` /
+  /// `whereHas` / `withCount` / etc. to resolve relation names to the
+  /// related table + foreign-key column.
+  final Map<String, RelationSpec> _relations;
+
   final List<Expression<bool>> _predicates = <Expression<bool>>[];
   final List<_OrderClause> _orderBy = <_OrderClause>[];
   int _limit = -1;
   int _offset = 0;
   final List<String> _eagerLoad = <String>[];
+  final List<_AggregateSpec> _aggregateSpecs = <_AggregateSpec>[];
 
   // ===== Soft-delete flags =====
   // Default behaviour (both false) matches Laravel: when the table has a
@@ -178,6 +218,190 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
     return this;
   }
 
+  // ===== has / whereHas / doesntHave / whereDoesntHave =====
+  //
+  // Strategy: each `has` family call appends a single
+  // [Expression<bool>] to _predicates. Drift folds these into the parent
+  // WHERE via SimpleSelectStatement.where(...) — so the whole chain
+  // (`.where(...).has(...).get()`) compiles to one query.
+  //
+  // The correlated subqueries' SQL is built by interpolating table and
+  // column names. The `?` placeholders inside the user's callback-supplied
+  // predicates are written first into a scratch [GenerationContext] so we
+  // can grab the resulting SQL fragment; the outer statement then re-runs
+  // `writeInto` so the bound variables line up correctly.
+
+  /// Restrict the query to rows that have **at least one** related row.
+  ///
+  /// `has('posts')` is equivalent to "this row's `posts` relation is not
+  /// empty". `has('posts', '>', 5)` means "at least 5 related rows". The
+  /// comparison is applied to a `COUNT(*)` subquery against the related
+  /// table.
+  ///
+  /// The relation name must exist in the `relations` map passed to the
+  /// [QueryBuilder] constructor.
+  QueryBuilder<T, D> has(
+    String relation, [
+    String op = '>=',
+    int value = 1,
+  ]) {
+    _predicates.add(_buildCountPredicate(relation, op, value));
+    return this;
+  }
+
+  /// Like [has], but allows adding extra constraints to the subquery via
+  /// [callback]. The callback receives a fresh [QueryBuilder] bound to the
+  /// related table; `.where(...)` calls inside it add constraints to the
+  /// existence check.
+  QueryBuilder<T, D> whereHas(
+    String relation, [
+    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+  ]) {
+    _predicates.add(_buildExistsPredicate(relation, callback));
+    return this;
+  }
+
+  /// Inverse of [has]: only rows whose relation is empty.
+  QueryBuilder<T, D> doesntHave(String relation) {
+    _predicates.add(_buildNotExistsPredicate(relation, null));
+    return this;
+  }
+
+  /// Like [doesntHave], but allows adding extra constraints to the
+  /// subquery via [callback].
+  QueryBuilder<T, D> whereDoesntHave(
+    String relation, [
+    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+  ]) {
+    _predicates.add(_buildNotExistsPredicate(relation, callback));
+    return this;
+  }
+
+  /// OR-flavoured [has].
+  QueryBuilder<T, D> orHas(
+    String relation, [
+    String op = '>=',
+    int value = 1,
+  ]) {
+    _orAppend(_buildCountPredicate(relation, op, value));
+    return this;
+  }
+
+  /// OR-flavoured [whereHas].
+  QueryBuilder<T, D> orWhereHas(
+    String relation, [
+    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+  ]) {
+    _orAppend(_buildExistsPredicate(relation, callback));
+    return this;
+  }
+
+  /// OR-flavoured [doesntHave].
+  QueryBuilder<T, D> orDoesntHave(String relation) {
+    _orAppend(_buildNotExistsPredicate(relation, null));
+    return this;
+  }
+
+  /// OR-flavoured [whereDoesntHave].
+  QueryBuilder<T, D> orWhereDoesntHave(
+    String relation, [
+    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+  ]) {
+    _orAppend(_buildNotExistsPredicate(relation, callback));
+    return this;
+  }
+
+  // ===== withCount / withSum / withAvg / withMin / withMax =====
+  //
+  // Strategy: each `withX` appends an [_AggregateSpec] to
+  // _aggregateSpecs. At terminal time, when there's at least one spec, we
+  // pivot to `Eloquent.db.select(table)..addColumns([...])` so Drift adds
+  // correlated-subquery columns to the parent's select list. We then read
+  // each TypedResult, wrap via `creator`, and stash the aggregate values
+  // on the model via `setLoaded` so callers can retrieve them.
+
+  /// Add a correlated `COUNT(*)` subquery column named `{relation}_count`
+  /// (or [alias] when given). The aggregate value is accessible after the
+  /// query via `model.getLoaded<int>('{relation}_count')`.
+  QueryBuilder<T, D> withCount(String relation, [String? alias]) {
+    _aggregateSpecs.add(
+      _AggregateSpec(
+        relation: relation,
+        fn: _AggregateFn.count,
+        aliasName: alias,
+      ),
+    );
+    return this;
+  }
+
+  /// Add a correlated `SUM({relation}.{column})` subquery column.
+  QueryBuilder<T, D> withSum(
+    String relation,
+    String column, [
+    String? alias,
+  ]) {
+    _aggregateSpecs.add(
+      _AggregateSpec(
+        relation: relation,
+        fn: _AggregateFn.sum,
+        column: column,
+        aliasName: alias,
+      ),
+    );
+    return this;
+  }
+
+  /// Add a correlated `AVG({relation}.{column})` subquery column.
+  QueryBuilder<T, D> withAvg(
+    String relation,
+    String column, [
+    String? alias,
+  ]) {
+    _aggregateSpecs.add(
+      _AggregateSpec(
+        relation: relation,
+        fn: _AggregateFn.avg,
+        column: column,
+        aliasName: alias,
+      ),
+    );
+    return this;
+  }
+
+  /// Add a correlated `MIN({relation}.{column})` subquery column.
+  QueryBuilder<T, D> withMin(
+    String relation,
+    String column, [
+    String? alias,
+  ]) {
+    _aggregateSpecs.add(
+      _AggregateSpec(
+        relation: relation,
+        fn: _AggregateFn.min,
+        column: column,
+        aliasName: alias,
+      ),
+    );
+    return this;
+  }
+
+  /// Add a correlated `MAX({relation}.{column})` subquery column.
+  QueryBuilder<T, D> withMax(
+    String relation,
+    String column, [
+    String? alias,
+  ]) {
+    _aggregateSpecs.add(
+      _AggregateSpec(
+        relation: relation,
+        fn: _AggregateFn.max,
+        column: column,
+        aliasName: alias,
+      ),
+    );
+    return this;
+  }
+
   // ===== Selectable<T> surface =====
 
   @override
@@ -187,6 +411,13 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
 
   @override
   Future<T> getSingle() async {
+    if (_aggregateSpecs.isNotEmpty) {
+      final rows = await _runAggregates(limit: 1);
+      if (rows.isEmpty) {
+        throw StateError('getSingle() returned no rows.');
+      }
+      return rows.first;
+    }
     final stmt = _buildStatement();
     _applyTo(stmt);
     stmt.limit(1);
@@ -196,6 +427,10 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
 
   @override
   Future<T?> getSingleOrNull() async {
+    if (_aggregateSpecs.isNotEmpty) {
+      final rows = await _runAggregates(limit: 1);
+      return rows.isEmpty ? null : rows.first;
+    }
     final stmt = _buildStatement();
     _applyTo(stmt);
     stmt.limit(1);
@@ -205,6 +440,12 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
 
   @override
   Stream<List<T>> watch() {
+    if (_aggregateSpecs.isNotEmpty) {
+      // Reactive streams for aggregated queries fall back to a one-shot
+      // get() — Drift's `addColumns` returns a different statement type
+      // whose watch() we don't fully re-implement. v1 limitation.
+      return Stream<List<T>>.fromFuture(_runAggregates());
+    }
     final stmt = _buildStatement();
     _applyTo(stmt);
     return stmt.watch().asyncMap((rows) async {
@@ -246,6 +487,10 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   // ===== Terminal =====
 
   Future<T?> first() async {
+    if (_aggregateSpecs.isNotEmpty) {
+      final rows = await _runAggregates(limit: 1);
+      return rows.isEmpty ? null : rows.first;
+    }
     final stmt = _buildStatement();
     _applyTo(stmt);
     stmt.limit(1);
@@ -369,6 +614,10 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   }
 
   Future<bool> exists() async {
+    if (_aggregateSpecs.isNotEmpty) {
+      final rows = await _runAggregates(limit: 1);
+      return rows.isNotEmpty;
+    }
     final stmt = _buildStatement();
     _applyTo(stmt);
     stmt.limit(1);
@@ -416,6 +665,18 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   }) async {
     final total = await count();
     final offset = (page - 1) * perPage;
+
+    if (_aggregateSpecs.isNotEmpty) {
+      final models =
+          await _runAggregates(limit: perPage, offset: offset);
+      return Paginator<T>(
+        data: models,
+        currentPage: page,
+        perPage: perPage,
+        total: total,
+        query: this,
+      );
+    }
 
     final stmt = _buildStatement();
     _applyTo(stmt);
@@ -472,11 +733,67 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   }
 
   Future<List<T>> _runWithEagerLoad() async {
+    if (_aggregateSpecs.isNotEmpty) {
+      return _runAggregates();
+    }
     final stmt = _buildStatement();
     _applyTo(stmt);
     final rows = await stmt.get();
     final models = rows.map(creator).toList(growable: false);
     if (_eagerLoad.isNotEmpty) {
+      await _applyEagerLoad(models);
+    }
+    return models;
+  }
+
+  /// Run the query with aggregate subquery columns attached.
+  ///
+  /// Uses `select(table)..addColumns(...)` so Drift switches to a
+  /// `JoinedSelectStatement`; the result is `List<TypedResult>`. For each
+  /// row we read back the table data into `D`, wrap via [creator], then
+  /// attach the aggregate values to the model via `setLoaded(alias, ...)`.
+  Future<List<T>> _runAggregates({int? limit, int? offset}) async {
+    final casted = table;
+    final stmt = Eloquent.db.select(casted);
+    _applyTo(stmt);
+
+    // Build one custom expression per aggregate spec, then attach via
+    // addColumns; Drift auto-aliases them (`c0`, `c1`, ...).
+    final aggregateExprs = <Expression<Object>>[
+      for (final spec in _aggregateSpecs)
+        _buildAggregateExpression(spec),
+    ];
+    final joined = stmt.addColumns(aggregateExprs);
+
+    if (limit != null) {
+      if (offset != null && offset > 0) {
+        joined.limit(limit, offset: offset);
+      } else {
+        joined.limit(limit);
+      }
+    } else if (_limit > 0) {
+      if (_offset > 0) {
+        joined.limit(_limit, offset: _offset);
+      } else {
+        joined.limit(_limit);
+      }
+    } else if (_offset > 0) {
+      joined.limit(1 << 30, offset: _offset);
+    }
+
+    final rows = await joined.get();
+    final models = <T>[];
+    for (final row in rows) {
+      final d = row.readTable(casted);
+      final model = creator(d);
+      for (var i = 0; i < _aggregateSpecs.length; i++) {
+        final spec = _aggregateSpecs[i];
+        final value = row.read<Object>(aggregateExprs[i]);
+        model.setLoaded(spec.alias, value);
+      }
+      models.add(model);
+    }
+    if (_eagerLoad.isNotEmpty && models.isNotEmpty) {
       await _applyEagerLoad(models);
     }
     return models;
@@ -523,6 +840,159 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
     return result;
   }
 
+  // ===== has / whereHas internals =====
+
+  /// Build a `(SELECT COUNT(*) FROM rel WHERE <correlation>) op value`
+  /// predicate for a `has` / `orHas` call.
+  Expression<bool> _buildCountPredicate(
+    String relation,
+    String op,
+    int value,
+  ) {
+    final rel = _requireRelation(relation);
+    final relatedTableName = rel.relatedTable.actualTableName;
+    final localTableName =
+        (table as TableInfo<Table, Object>).actualTableName;
+    final correlation =
+        '$relatedTableName.${rel.foreignKey} = $localTableName.${rel.localKey}';
+    final subquerySql =
+        'SELECT COUNT(*) FROM $relatedTableName WHERE $correlation';
+    return _SubqueryIntCompareExpression(
+      subquerySql: subquerySql,
+      op: op,
+      value: value,
+    );
+  }
+
+  /// Build an `EXISTS (SELECT 1 FROM rel WHERE <correlation> [AND extra])`
+  /// predicate for `whereHas` / `orWhereHas`.
+  Expression<bool> _buildExistsPredicate(
+    String relation,
+    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+  ) {
+    final rel = _requireRelation(relation);
+    final relatedTableName = rel.relatedTable.actualTableName;
+    final localTableName =
+        (table as TableInfo<Table, Object>).actualTableName;
+    final correlation =
+        '$relatedTableName.${rel.foreignKey} = $localTableName.${rel.localKey}';
+    final extra = _callbackExtraWhere(rel, callback);
+    final subquerySql = extra.isEmpty
+        ? 'SELECT 1 FROM $relatedTableName WHERE $correlation'
+        : 'SELECT 1 FROM $relatedTableName WHERE ($correlation) AND $extra';
+    return _SubqueryExistsExpression(subquerySql: subquerySql);
+  }
+
+  /// Build a `NOT EXISTS (...)` predicate for `doesntHave` /
+  /// `whereDoesntHave`.
+  Expression<bool> _buildNotExistsPredicate(
+    String relation,
+    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+  ) {
+    final rel = _requireRelation(relation);
+    final relatedTableName = rel.relatedTable.actualTableName;
+    final localTableName =
+        (table as TableInfo<Table, Object>).actualTableName;
+    final correlation =
+        '$relatedTableName.${rel.foreignKey} = $localTableName.${rel.localKey}';
+    final extra = _callbackExtraWhere(rel, callback);
+    final subquerySql = extra.isEmpty
+        ? 'SELECT 1 FROM $relatedTableName WHERE $correlation'
+        : 'SELECT 1 FROM $relatedTableName WHERE ($correlation) AND $extra';
+    return _SubqueryNotExistsExpression(subquerySql: subquerySql);
+  }
+
+  /// Build an `(SELECT AGG FROM related WHERE correlation)` expression
+  /// suitable for passing to `addColumns` (the `withCount` / `withSum` /
+  /// etc. pathway).
+  Expression<Object> _buildAggregateExpression(_AggregateSpec spec) {
+    final rel = _requireRelation(spec.relation);
+    final relatedTableName = rel.relatedTable.actualTableName;
+    final localTableName =
+        (table as TableInfo<Table, Object>).actualTableName;
+    final correlation =
+        '$relatedTableName.${rel.foreignKey} = $localTableName.${rel.localKey}';
+    final fn = switch (spec.fn) {
+      _AggregateFn.count => 'COUNT(*)',
+      _AggregateFn.sum =>
+        'SUM($relatedTableName.${spec.column})',
+      _AggregateFn.avg =>
+        'AVG($relatedTableName.${spec.column})',
+      _AggregateFn.min =>
+        'MIN($relatedTableName.${spec.column})',
+      _AggregateFn.max =>
+        'MAX($relatedTableName.${spec.column})',
+    };
+    return _SubqueryAggregateExpression(
+      functionSql: fn,
+      relatedTableName: relatedTableName,
+      correlation: correlation,
+    );
+  }
+
+  /// Look up [relation] in `_relations` and throw a
+  /// [RelationNotFoundException] (with the available-relations list) if it
+  /// isn't there.
+  RelationSpec _requireRelation(String relation) {
+    final rel = _relations[relation];
+    if (rel == null) {
+      throw RelationNotFoundException(
+        relation: relation,
+        availableRelations: _relations.keys.toList()..sort(),
+      );
+    }
+    return rel;
+  }
+
+  /// OR-append [p] to `_predicates`, mirroring `orWhere`'s
+  /// "combine with the prior predicate; or just push if empty" rule.
+  void _orAppend(Expression<bool> p) {
+    if (_predicates.isEmpty) {
+      _predicates.add(p);
+    } else {
+      final last = _predicates.removeLast();
+      _predicates.add(last | p);
+    }
+  }
+
+  /// Materialise the [callback]'s predicates into a single SQL fragment
+  /// (already joined by AND, in parentheses if more than one). Returns an
+  /// empty string when there is no callback or no predicates.
+  ///
+  /// The `?` placeholders and their [Variable]s are written into a
+  /// scratch [GenerationContext]; they're then re-emitted when the outer
+  /// [Statement] re-runs `writeInto` on the enclosing expression. This
+  /// matters because Drift's variable-index bookkeeping is per-context.
+  String _callbackExtraWhere(
+    RelationSpec rel,
+    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+  ) {
+    if (callback == null) return '';
+    // Build a scratch QueryBuilder bound to the related table. We use the
+    // unconstrained `dynamic, dynamic` form so callers don't need a real
+    // model class to chain `.where(...)` against — only the
+    // `RelationSpec.relatedTable` is required.
+    // ignore: type_argument_not_matching_bounds
+    final tempBuilder = QueryBuilder<dynamic, dynamic>(
+      table: rel.relatedTable,
+      creator: (d) => d,
+      primaryKey: rel.localKey,
+    );
+    callback(tempBuilder);
+    if (tempBuilder._predicates.isEmpty) return '';
+    final ctx = GenerationContext.fromDb(Eloquent.db);
+    final fragments = <String>[];
+    for (var i = 0; i < tempBuilder._predicates.length; i++) {
+      if (i > 0) fragments.add(' AND ');
+      final startLen = ctx.buffer.length;
+      tempBuilder._predicates[i].writeInto(ctx);
+      fragments.add(ctx.buffer.toString().substring(startLen));
+    }
+    return fragments.length == 1
+        ? fragments.single
+        : '(${fragments.join()})';
+  }
+
   GeneratedColumn<Object> _colByName(String name) =>
       resolveColumn(table as TableInfo<Table, Object>, name);
 
@@ -549,6 +1019,183 @@ class _OrderClause {
   const _OrderClause({required this.column, required this.descending});
   final String column;
   final bool descending;
+}
+
+// ===== internal: aggregate spec =====
+
+enum _AggregateFn { count, sum, avg, min, max }
+
+/// Describes one `withCount` / `withSum` / `withAvg` / `withMin` /
+/// `withMax` call.
+class _AggregateSpec {
+  _AggregateSpec({
+    required this.relation,
+    required this.fn,
+    this.column,
+    this.aliasName,
+  });
+
+  final String relation;
+  final _AggregateFn fn;
+  final String? column;
+
+  /// Caller-supplied alias (optional). Falls back to a function-specific
+  /// default below.
+  final String? aliasName;
+
+  /// The alias the aggregate column will be stored under on the model
+  /// (via `setLoaded`).
+  String get alias {
+    if (aliasName != null) return aliasName!;
+    switch (fn) {
+      case _AggregateFn.count:
+        return '${relation}_count';
+      case _AggregateFn.sum:
+        return '${relation}_sum_${column ?? ''}';
+      case _AggregateFn.avg:
+        return '${relation}_avg_${column ?? ''}';
+      case _AggregateFn.min:
+        return '${relation}_min_${column ?? ''}';
+      case _AggregateFn.max:
+        return '${relation}_max_${column ?? ''}';
+    }
+  }
+}
+
+// ===== internal: custom Expression subclasses =====
+
+/// `(<subquery>) <op> <value>` — wraps a correlated COUNT subquery and
+/// applies an integer comparison operator to it. Writes a single `?`
+/// placeholder for `value`, registered with the outer [GenerationContext].
+class _SubqueryIntCompareExpression extends Expression<bool> {
+  _SubqueryIntCompareExpression({
+    required this.subquerySql,
+    required this.op,
+    required this.value,
+  });
+
+  final String subquerySql;
+  final String op;
+  final int value;
+
+  @override
+  Precedence get precedence => Precedence.comparisonEq;
+
+  @override
+  void writeInto(GenerationContext context) {
+    final v = Variable<int>(value);
+    context.buffer.write('(');
+    context.buffer.write(subquerySql);
+    context.buffer.write(')');
+    context.buffer.write(' $op ');
+    v.writeInto(context);
+  }
+
+  @override
+  int get hashCode => Object.hash(subquerySql, op, value);
+
+  @override
+  bool operator ==(Object other) {
+    if (other is! _SubqueryIntCompareExpression) return false;
+    return other.subquerySql == subquerySql &&
+        other.op == op &&
+        other.value == value;
+  }
+}
+
+/// `EXISTS (<subquery>)` — writes no `?` placeholders of its own; any
+/// inside [subquerySql] were already registered by the original
+/// callback's `writeInto` and will be re-emitted when this expression is
+/// itself `writeInto`'d.
+class _SubqueryExistsExpression extends Expression<bool> {
+  _SubqueryExistsExpression({required this.subquerySql});
+  final String subquerySql;
+
+  @override
+  Precedence get precedence => Precedence.comparisonEq;
+
+  @override
+  void writeInto(GenerationContext context) {
+    context.buffer.write('EXISTS (');
+    context.buffer.write(subquerySql);
+    context.buffer.write(')');
+  }
+
+  @override
+  int get hashCode => subquerySql.hashCode;
+
+  @override
+  bool operator ==(Object other) {
+    return other is _SubqueryExistsExpression &&
+        other.subquerySql == subquerySql;
+  }
+}
+
+/// `NOT EXISTS (<subquery>)` — same variable-handling rules as
+/// [_SubqueryExistsExpression].
+class _SubqueryNotExistsExpression extends Expression<bool> {
+  _SubqueryNotExistsExpression({required this.subquerySql});
+  final String subquerySql;
+
+  @override
+  Precedence get precedence => Precedence.comparisonEq;
+
+  @override
+  void writeInto(GenerationContext context) {
+    context.buffer.write('NOT EXISTS (');
+    context.buffer.write(subquerySql);
+    context.buffer.write(')');
+  }
+
+  @override
+  int get hashCode => subquerySql.hashCode;
+
+  @override
+  bool operator ==(Object other) {
+    return other is _SubqueryNotExistsExpression &&
+        other.subquerySql == subquerySql;
+  }
+}
+
+/// `(SELECT <agg-fn> FROM <related> WHERE <correlation>)` — used as a
+/// SELECT-column expression by `withCount` / `withSum` / etc. Drift
+/// auto-aliases these to `c0`, `c1`, ... when passed to `addColumns`.
+class _SubqueryAggregateExpression extends Expression<Object> {
+  _SubqueryAggregateExpression({
+    required this.functionSql,
+    required this.relatedTableName,
+    required this.correlation,
+  });
+
+  final String functionSql;
+  final String relatedTableName;
+  final String correlation;
+
+  @override
+  Precedence get precedence => Precedence.primary;
+
+  @override
+  void writeInto(GenerationContext context) {
+    context.buffer.write('(SELECT ');
+    context.buffer.write(functionSql);
+    context.buffer.write(' FROM ');
+    context.buffer.write(relatedTableName);
+    context.buffer.write(' WHERE ');
+    context.buffer.write(correlation);
+    context.buffer.write(')');
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(functionSql, relatedTableName, correlation);
+
+  @override
+  bool operator ==(Object other) {
+    return other is _SubqueryAggregateExpression &&
+        other.functionSql == functionSql &&
+        other.relatedTableName == relatedTableName &&
+        other.correlation == correlation;
+  }
 }
 
 /// Maps a [Selectable] element-by-element.
