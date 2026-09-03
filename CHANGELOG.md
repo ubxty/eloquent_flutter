@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.2 — 2026-09-03
+
+Trim `pubspec.yaml` description to 164 chars so it lands inside pub.dev's
+60–180 char ideal range and the static-analysis scorer awards full marks.
+
 ## 0.1.1 — 2026-09-03
 
 Shorten `pubspec.yaml` description so it fits the pub.dev 180-char

@@ -1,9 +1,9 @@
 name: eloquent_flutter
 description: >
-  Laravel Eloquent-style ORM for Flutter and Dart on top of Drift:
-  chainable queries, casts, soft deletes, dirty tracking, relationships,
-  eager loading, observers, pagination, and a schema DSL.
-version: 0.1.1
+  Laravel Eloquent-style ORM for Flutter and Dart on top of Drift.
+  Chainable queries, casts, soft deletes, relationships, observers,
+  pagination, and a schema DSL.
+version: 0.1.2
 homepage: https://github.com/ubxty/eloquent_flutter
 repository: https://github.com/ubxty/eloquent_flutter
 
