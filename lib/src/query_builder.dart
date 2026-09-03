@@ -113,14 +113,14 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   }
 
   QueryBuilder<T, D> whereIn(String column, List<Object?> values) {
-    final nonNull = values.whereType<Object>().toList();
-    _predicates.add(_colByName(column).isIn(nonNull));
+    // Route through `applyOperator(op='in')` so the typed `isIn`
+    // dispatch lives in one place (`operators.dart`).
+    _predicates.add(applyOperator(_colByName(column), 'in', values));
     return this;
   }
 
   QueryBuilder<T, D> whereNotIn(String column, List<Object?> values) {
-    final nonNull = values.whereType<Object>().toList();
-    _predicates.add(_colByName(column).isIn(nonNull).not());
+    _predicates.add(applyOperator(_colByName(column), 'not in', values));
     return this;
   }
 
@@ -422,7 +422,7 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
     _applyTo(stmt);
     stmt.limit(1);
     final row = await stmt.getSingle();
-    return creator(row);
+    return creator(row).wrap(row);
   }
 
   @override
@@ -435,7 +435,7 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
     _applyTo(stmt);
     stmt.limit(1);
     final row = await stmt.getSingleOrNull();
-    return row == null ? null : creator(row);
+    return row == null ? null : creator(row).wrap(row);
   }
 
   @override
@@ -449,7 +449,9 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
     final stmt = _buildStatement();
     _applyTo(stmt);
     return stmt.watch().asyncMap((rows) async {
-      final models = rows.map(creator).toList(growable: false);
+      final models = rows
+        .map((r) => creator(r).wrap(r))
+        .toList(growable: false);
       if (_eagerLoad.isNotEmpty) {
         await _applyEagerLoad(models);
       }
@@ -495,13 +497,31 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
     _applyTo(stmt);
     stmt.limit(1);
     final row = await stmt.getSingleOrNull();
-    return row == null ? null : creator(row);
+    return row == null ? null : creator(row).wrap(row);
   }
 
   Future<int> count() async {
+    // Build a `WHERE ...` clause honoring the soft-delete filter plus any
+    // user-supplied predicates so count() agrees with get() (rows that
+    // would be hidden from `get()` are also hidden from `count()`).
+    final typed = table as TableInfo<Table, Object>;
+    final trashed = _trashedExpression();
+    final allPreds = <Expression<bool>>[
+      if (trashed != null) trashed,
+      ..._predicates,
+    ];
+    String? whereSql;
+    if (allPreds.isNotEmpty) {
+      final ctx = GenerationContext.fromDb(Eloquent.db);
+      ctx.buffer.write(' WHERE ');
+      for (var i = 0; i < allPreds.length; i++) {
+        if (i > 0) ctx.buffer.write(' AND ');
+        allPreds[i].writeInto(ctx);
+      }
+      whereSql = ctx.buffer.toString();
+    }
     final stmt = Eloquent.db.customSelect(
-      'SELECT COUNT(*) AS c FROM '
-      '${(table as TableInfo<Table, Object>).actualTableName}',
+      'SELECT COUNT(*) AS c FROM "${typed.actualTableName}"$whereSql',
       readsFrom: {table},
     );
     final row = await stmt.getSingle();
@@ -588,7 +608,9 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   }
 
   /// Arithmetic mean of [column]. Returns `double.nan` if the table is
-  /// empty (SQL AVG over zero rows is NULL).
+  /// empty (SQL AVG over zero rows is NULL). Reads through `row.data`
+  /// because drift's typed reader for `double?` doesn't decode the
+  /// `REAL` column value drift's customSelect returns for AVG.
   Future<double> avg(String column) async {
     _colByName(column);
     final stmt = Eloquent.db.customSelect(
@@ -597,11 +619,15 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
       readsFrom: {table},
     );
     final row = await stmt.getSingle();
-    return row.read<double?>('v') ?? double.nan;
+    final v = row.data['v'];
+    return v is num ? v.toDouble() : double.nan;
   }
 
   /// Total of [column] across the table. Returns `0` if the table is
-  /// empty (SQL SUM over zero rows is NULL).
+  /// empty (SQL SUM over zero rows is NULL). Reads through `row.data`
+  /// rather than Drift's typed readers because `num` doesn't round-trip
+  /// cleanly as a primitive — `int` and `double` both decode, and null
+  /// is normalized to `0` here.
   Future<num> sum(String column) async {
     _colByName(column);
     final stmt = Eloquent.db.customSelect(
@@ -610,7 +636,8 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
       readsFrom: {table},
     );
     final row = await stmt.getSingle();
-    return row.read<num?>('v') ?? 0;
+    final v = row.data['v'];
+    return v is num ? v : 0;
   }
 
   Future<bool> exists() async {
@@ -683,7 +710,9 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
     stmt.limit(perPage, offset: offset);
 
     final rows = await stmt.get();
-    final models = rows.map(creator).toList(growable: false);
+    final models = rows
+        .map((r) => creator(r).wrap(r))
+        .toList(growable: false);
     if (_eagerLoad.isNotEmpty) {
       await _applyEagerLoad(models);
     }
@@ -739,7 +768,9 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
     final stmt = _buildStatement();
     _applyTo(stmt);
     final rows = await stmt.get();
-    final models = rows.map(creator).toList(growable: false);
+    final models = rows
+        .map((r) => creator(r).wrap(r))
+        .toList(growable: false);
     if (_eagerLoad.isNotEmpty) {
       await _applyEagerLoad(models);
     }
@@ -782,13 +813,29 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
     }
 
     final rows = await joined.get();
+    // `addColumns` attaches each expression as an additional column on the
+    // row; read each aggregate back via the expression we passed in. The
+    // expression's declared return type (`int`, `num`, `double`) drives
+    // drift's typed `read<T>` so we get back values of the matching
+    // primitive type, not `Object`.
     final models = <T>[];
     for (final row in rows) {
       final d = row.readTable(casted);
-      final model = creator(d);
+      final model = creator(d).wrap(d);
       for (var i = 0; i < _aggregateSpecs.length; i++) {
         final spec = _aggregateSpecs[i];
-        final value = row.read<Object>(aggregateExprs[i]);
+        final expr = aggregateExprs[i];
+        final Object? value;
+        switch (spec.fn) {
+          case _AggregateFn.count:
+            value = row.read<int>(expr as Expression<int>);
+          case _AggregateFn.avg:
+            value = row.read<double>(expr as Expression<double>);
+          case _AggregateFn.sum:
+          case _AggregateFn.min:
+          case _AggregateFn.max:
+            value = row.read<num>(expr as Expression<num>);
+        }
         model.setLoaded(spec.alias, value);
       }
       models.add(model);
@@ -904,7 +951,8 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
 
   /// Build an `(SELECT AGG FROM related WHERE correlation)` expression
   /// suitable for passing to `addColumns` (the `withCount` / `withSum` /
-  /// etc. pathway).
+  /// etc. pathway). The returned expression is typed (int / num / double)
+  /// so drift can bind it to a SQL type at read-time.
   Expression<Object> _buildAggregateExpression(_AggregateSpec spec) {
     final rel = _requireRelation(spec.relation);
     final relatedTableName = rel.relatedTable.actualTableName;
@@ -912,22 +960,38 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
         (table as TableInfo<Table, Object>).actualTableName;
     final correlation =
         '$relatedTableName.${rel.foreignKey} = $localTableName.${rel.localKey}';
-    final fn = switch (spec.fn) {
-      _AggregateFn.count => 'COUNT(*)',
-      _AggregateFn.sum =>
-        'SUM($relatedTableName.${spec.column})',
-      _AggregateFn.avg =>
-        'AVG($relatedTableName.${spec.column})',
-      _AggregateFn.min =>
-        'MIN($relatedTableName.${spec.column})',
-      _AggregateFn.max =>
-        'MAX($relatedTableName.${spec.column})',
-    };
-    return _SubqueryAggregateExpression(
-      functionSql: fn,
-      relatedTableName: relatedTableName,
-      correlation: correlation,
-    );
+    switch (spec.fn) {
+      case _AggregateFn.count:
+        return _IntSubqueryAggregateExpression(
+          functionSql: 'COUNT(*)',
+          relatedTableName: relatedTableName,
+          correlation: correlation,
+        );
+      case _AggregateFn.avg:
+        return _DoubleSubqueryAggregateExpression(
+          functionSql: 'AVG($relatedTableName.${spec.column})',
+          relatedTableName: relatedTableName,
+          correlation: correlation,
+        );
+      case _AggregateFn.sum:
+        return _NumSubqueryAggregateExpression(
+          functionSql: 'SUM($relatedTableName.${spec.column})',
+          relatedTableName: relatedTableName,
+          correlation: correlation,
+        );
+      case _AggregateFn.min:
+        return _NumSubqueryAggregateExpression(
+          functionSql: 'MIN($relatedTableName.${spec.column})',
+          relatedTableName: relatedTableName,
+          correlation: correlation,
+        );
+      case _AggregateFn.max:
+        return _NumSubqueryAggregateExpression(
+          functionSql: 'MAX($relatedTableName.${spec.column})',
+          relatedTableName: relatedTableName,
+          correlation: correlation,
+        );
+    }
   }
 
   /// Look up [relation] in `_relations` and throw a
@@ -1158,10 +1222,21 @@ class _SubqueryNotExistsExpression extends Expression<bool> {
 }
 
 /// `(SELECT <agg-fn> FROM <related> WHERE <correlation>)` — used as a
-/// SELECT-column expression by `withCount` / `withSum` / etc. Drift
-/// auto-aliases these to `c0`, `c1`, ... when passed to `addColumns`.
-class _SubqueryAggregateExpression extends Expression<Object> {
-  _SubqueryAggregateExpression({
+/// SELECT-column expression by `withCount` / `withSum` / etc.
+///
+/// Three specialised subclasses — `IntSubqueryAggregateExpression`,
+/// `_DoubleSubqueryAggregateExpression`, `_NumSubqueryAggregateExpression`
+/// — declare the Dart return type so drift can match it against a SQL
+/// type when `TypedResult.read<T>` is called. `Expression<Object>` (the
+/// natural parent) has no SQL-type mapping and would throw at read time.
+///
+/// Each subclass extends the corresponding `Expression<T>` directly rather
+/// than sharing a base class: Dart disallows implementing two
+/// `Expression<...>` instantiations with different type parameters.
+
+/// `COUNT(*)` — always INTEGER. Exposed via `read<int>` on the result.
+class _IntSubqueryAggregateExpression extends Expression<int> {
+  _IntSubqueryAggregateExpression({
     required this.functionSql,
     required this.relatedTableName,
     required this.correlation,
@@ -1191,7 +1266,86 @@ class _SubqueryAggregateExpression extends Expression<Object> {
 
   @override
   bool operator ==(Object other) {
-    return other is _SubqueryAggregateExpression &&
+    return other is _IntSubqueryAggregateExpression &&
+        other.functionSql == functionSql &&
+        other.relatedTableName == relatedTableName &&
+        other.correlation == correlation;
+  }
+}
+
+/// `AVG(col)` — always REAL. Exposed via `read<double>` on the result.
+class _DoubleSubqueryAggregateExpression extends Expression<double> {
+  _DoubleSubqueryAggregateExpression({
+    required this.functionSql,
+    required this.relatedTableName,
+    required this.correlation,
+  });
+
+  final String functionSql;
+  final String relatedTableName;
+  final String correlation;
+
+  @override
+  Precedence get precedence => Precedence.primary;
+
+  @override
+  void writeInto(GenerationContext context) {
+    context.buffer.write('(SELECT ');
+    context.buffer.write(functionSql);
+    context.buffer.write(' FROM ');
+    context.buffer.write(relatedTableName);
+    context.buffer.write(' WHERE ');
+    context.buffer.write(correlation);
+    context.buffer.write(')');
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(functionSql, relatedTableName, correlation);
+
+  @override
+  bool operator ==(Object other) {
+    return other is _DoubleSubqueryAggregateExpression &&
+        other.functionSql == functionSql &&
+        other.relatedTableName == relatedTableName &&
+        other.correlation == correlation;
+  }
+}
+
+/// `SUM` / `MIN` / `MAX` over an INTEGER column — INTEGER. Exposed via
+/// `read<num>`.
+class _NumSubqueryAggregateExpression extends Expression<num> {
+  _NumSubqueryAggregateExpression({
+    required this.functionSql,
+    required this.relatedTableName,
+    required this.correlation,
+  });
+
+  final String functionSql;
+  final String relatedTableName;
+  final String correlation;
+
+  @override
+  Precedence get precedence => Precedence.primary;
+
+  @override
+  void writeInto(GenerationContext context) {
+    context.buffer.write('(SELECT ');
+    context.buffer.write(functionSql);
+    context.buffer.write(' FROM ');
+    context.buffer.write(relatedTableName);
+    context.buffer.write(' WHERE ');
+    context.buffer.write(correlation);
+    context.buffer.write(')');
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(functionSql, relatedTableName, correlation);
+
+  @override
+  bool operator ==(Object other) {
+    return other is _NumSubqueryAggregateExpression &&
         other.functionSql == functionSql &&
         other.relatedTableName == relatedTableName &&
         other.correlation == correlation;

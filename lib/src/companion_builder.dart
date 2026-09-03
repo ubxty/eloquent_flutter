@@ -66,10 +66,33 @@ class _MapInsertable<D> implements Insertable<D> {
     for (final entry in _values.entries) {
       final column = _lookupColumn(entry.key);
       final rawValue = entry.value;
-      if (rawValue == null && (nullToAbsent || this.nullToAbsent)) {
+      // Skip nulls only when both drift's caller AND the instance asked
+      // for nullToAbsent semantics — matches Laravel's "explicit null
+      // to set, otherwise absent" convention and lets users force a
+      // NULL write on update by passing `nullToAbsent: false` to
+      // [CompanionBuilder.fromMap].
+      if (rawValue == null && nullToAbsent && this.nullToAbsent) {
         continue;
       }
-      result[column.name] = Variable<Object>(rawValue as Object);
+      // Skip auto-incremented primary keys when the user hasn't supplied
+      // a real value (0 is the placeholder drift writes for a freshly
+      // constructed row). Without this guard the second insert would
+      // collide on `id = 0` because SQLite's `INTEGER PRIMARY KEY
+      // AUTOINCREMENT` treats 0 as a literal rowid, not a request for
+      // the next available id. Users who actually want to import a
+      // specific id can still set one — they'd just need to pass a
+      // non-zero value.
+      if (column.hasAutoIncrement &&
+          (rawValue == null || rawValue == 0)) {
+        continue;
+      }
+      // Drift's `Variable<Object>` rejects `null` (it expects an
+      // `Object`), so emit a literal `NULL` expression when the value
+      // is null. The `Expression<Object>` type is satisfied via the
+      // null-literal subclass below.
+      result[column.name] = rawValue == null
+          ? const _NullLiteralExpression()
+          : Variable<Object>(rawValue as Object);
     }
     return result;
   }
@@ -77,4 +100,27 @@ class _MapInsertable<D> implements Insertable<D> {
   GeneratedColumn<Object> _lookupColumn(String name) {
     return resolveColumn(_table as TableInfo<Table, Object>, name);
   }
+}
+
+/// Writes the SQL literal `NULL`. Used by [CompanionBuilder] when the
+/// caller explicitly passes a null value (and bypassed the
+/// `nullToAbsent` filter) so the resulting column expression is still
+/// a valid `Expression<Object>` instead of `Variable<Object>` (which
+/// refuses nulls).
+class _NullLiteralExpression extends Expression<Object> {
+  const _NullLiteralExpression();
+
+  @override
+  Precedence get precedence => Precedence.primary;
+
+  @override
+  void writeInto(GenerationContext context) {
+    context.buffer.write('NULL');
+  }
+
+  @override
+  int get hashCode => 'NULL'.hashCode;
+
+  @override
+  bool operator ==(Object other) => other is _NullLiteralExpression;
 }

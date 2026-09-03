@@ -24,6 +24,16 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
   /// The current row data. Re-assign after a save/update to refresh.
   D $data;
 
+  /// True once this instance has been INSERTed into the database at least
+  /// once. Used by [save] to pick the INSERT vs UPDATE branch — equivalent
+  /// to Laravel's "exists" flag.
+  ///
+  /// A freshly constructed model with `id = 0` (drift's autoIncrement
+  /// placeholder) still has `$exists == false`, so `save()` on it runs the
+  /// INSERT path. After successful create() or save() the flag flips to
+  /// true and subsequent saves go through UPDATE.
+  bool $exists = false;
+
   /// Pending attribute writes staged via [setAttribute]. Read by
   /// [getAttribute] / [toMapWithPending] and cleared by `_snapshotOriginal`.
   final Map<String, Object?> _pending = <String, Object?>{};
@@ -202,13 +212,25 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
   /// Take a fresh snapshot of the current `$data`, flush pending writes,
   /// and clear dirty / changes state. Called by `save()` / `update()` /
   /// `refresh()`.
-  void _snapshotOriginal() {
+  ///
+  /// When [clearChanges] is false (the path taken by `save()`), the
+  /// columns that were dirty at this snapshot are preserved in `_changes`
+  /// so that `wasChanged()` continues to report them, matching Laravel's
+  /// `$model->wasChanged()` semantics. Pass [clearChanges] true (or omit)
+  /// to fully reset state — used by `refresh()`, `ModelQuery.create()`, and
+  /// constructor.
+  void _snapshotOriginal({bool clearChanges = true}) {
+    if (!clearChanges) {
+      _changes.addAll(_dirty);
+    }
     _original
       ..clear()
       ..addAll(toMap());
     _pending.clear();
     _dirty.clear();
-    _changes.clear();
+    if (clearChanges) {
+      _changes.clear();
+    }
   }
 
   // ===== Instance CRUD =====
@@ -220,12 +242,15 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
   /// (update path) observers. Returning `false` from a cancelable hook
   /// aborts the operation and throws [OperationCancelledException].
   Future<T> save() async {
-    final pkValue = $primaryKeyValue;
-    if (pkValue == null) {
+    // INSERT vs UPDATE is decided by whether this instance has ever been
+    // persisted. Using `$exists` (not PK presence) means a freshly-built
+    // model with `id = 0` (drift's autoIncrement placeholder) still
+    // takes the INSERT branch.
+    if (!$exists) {
       if (!_quiet && !dispatchCancelable('creating', this)) {
         cancelOperation('creating', this);
       }
-      final values = _timestampValues(toMap(), isInsert: true);
+      final values = _timestampValues(toMapWithPending(), isInsert: true);
       final id = await Eloquent.db.into($table).insert(
             CompanionBuilder.fromMap(
               table: $table,
@@ -244,14 +269,17 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
       // Mutate in place so callers holding the original reference see
       // the new state.
       $data = wrapped.$data;
-      _snapshotOriginal();
+      $exists = true;
+      // Preserve _changes so wasChanged() reports what was just saved.
+      _snapshotOriginal(clearChanges: false);
       if (!_quiet) dispatchVoid('created', this);
       return wrapped;
     } else {
       if (!_quiet && !dispatchCancelable('updating', this)) {
         cancelOperation('updating', this);
       }
-      final values = _timestampValues(toMap(), isInsert: false);
+      final values = _timestampValues(toMapWithPending(), isInsert: false);
+      final pkValue = $primaryKeyValue!;
       final stmt = Eloquent.db.update($table)
         ..where((_) => resolveColumn($table as TableInfo<Table, Object>,
                 $primaryKey)
@@ -263,7 +291,7 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
           nullToAbsent: true,
         ),
       );
-      _snapshotOriginal();
+      _snapshotOriginal(clearChanges: false);
       if (!_quiet) dispatchVoid('updated', this);
       return this as T;
     }
@@ -296,13 +324,13 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
       ..addAll(values);
     // Strip the PK so it doesn't get overwritten.
     merged.remove($primaryKey);
-    final pkValue = $primaryKeyValue;
-    if (pkValue == null) {
+    if (!$exists || $primaryKeyValue == null) {
       throw InvalidArgumentException(
-        'Cannot update() a model with no primary-key value. '
+        'Cannot update() a model that has not been saved yet. '
         'Call save() first to insert the row.',
       );
     }
+    final pkValue = $primaryKeyValue!;
     final stmt = Eloquent.db.update($table)
       ..where((_) => resolveColumn($table as TableInfo<Table, Object>,
               $primaryKey)
@@ -406,10 +434,11 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
     }
   }
 
-  /// Helper used by [ModelQuery.create]: wraps a freshly-inserted row and
-  /// takes a baseline snapshot.
+  /// Helper used by [ModelQuery.create]: wraps a freshly-inserted row,
+  /// flips [$exists] to true, and takes a baseline snapshot.
   T wrap(D data) {
     final wrapped = $wrap(data);
+    wrapped.$exists = true;
     wrapped._snapshotOriginal();
     return wrapped;
   }

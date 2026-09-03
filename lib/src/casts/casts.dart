@@ -115,9 +115,18 @@ class Casts {
     );
   }
 
-  static String fromInt(Object value) {
-    if (value is int) return value.toString();
-    if (value is String) return value;
+  /// Inverse of [toInt] used when values come from user code (e.g.
+  /// `Model.create({'stock': '42'})`) and need to be coerced into the
+  /// storage type for the column. Drift's `IntColumn` requires `int`, so
+  /// a stringly-typed `'42'` has to be parsed before it reaches Drift.
+  ///
+  /// Accepts `int`, `String`, `bool`, and `double`. Everything else
+  /// throws.
+  static int fromInt(Object value) {
+    if (value is int) return value;
+    if (value is String) return int.parse(value);
+    if (value is bool) return value ? 1 : 0;
+    if (value is double) return value.toInt();
     throw InvalidArgumentException(
       'Cannot uncast ${value.runtimeType} to int.',
     );
@@ -137,10 +146,12 @@ class Casts {
     );
   }
 
-  static String fromDouble(Object value) {
-    if (value is double) return value.toString();
-    if (value is int) return value.toDouble().toString();
-    if (value is String) return value;
+  /// Inverse of [toDouble]. Accepts `double`, `int`, and `String` and
+  /// returns the canonical `double` value drift expects.
+  static double fromDouble(Object value) {
+    if (value is double) return value;
+    if (value is int) return value.toDouble();
+    if (value is String) return double.parse(value);
     throw InvalidArgumentException(
       'Cannot uncast ${value.runtimeType} to double.',
     );
@@ -184,10 +195,12 @@ class Casts {
     );
   }
 
-  static String fromBool(Object value) {
-    if (value is bool) return value ? '1' : '0';
-    if (value is int) return (value != 0) ? '1' : '0';
-    if (value is String) return toBool(value) ? '1' : '0';
+  /// Inverse of [toBool]. Returns `bool` as the canonical drift value
+  /// (`bool` itself). Accepts `bool`, `int`, or `String`.
+  static bool fromBool(Object value) {
+    if (value is bool) return value;
+    if (value is int) return value != 0;
+    if (value is String) return toBool(value);
     throw InvalidArgumentException(
       'Cannot uncast ${value.runtimeType} to bool.',
     );
@@ -201,13 +214,16 @@ class Casts {
     return DateTime(dt.year, dt.month, dt.day);
   }
 
-  /// Format [value] as ISO-8601 (`yyyy-MM-dd`).
-  static String fromDate(Object value) {
+  /// Inverse of [toDate]. Drift's `DateTime` column accepts `DateTime`
+  /// instances; truncate to midnight before returning.
+  static DateTime fromDate(Object value) {
     if (value is DateTime) {
-      final d = DateTime(value.year, value.month, value.day);
-      return _isoDate(d);
+      return DateTime(value.year, value.month, value.day);
     }
-    if (value is String) return value;
+    if (value is String) {
+      final parsed = DateTime.parse(value);
+      return DateTime(parsed.year, parsed.month, parsed.day);
+    }
     throw InvalidArgumentException(
       'Cannot uncast ${value.runtimeType} to date.',
     );
@@ -233,10 +249,13 @@ class Casts {
     );
   }
 
-  /// Format [value] as an ISO-8601 datetime string.
-  static String fromDateTime(Object value) {
-    if (value is DateTime) return value.toIso8601String();
-    if (value is String) return DateTime.parse(value).toIso8601String();
+  /// Inverse of [toDateTime]. Drift's `DateTime` column accepts `DateTime`
+  /// instances directly, so the canonical storage form is the same
+  /// `DateTime` object the user typed. If a `String` arrives from caller
+  /// code, parse it; anything else throws.
+  static DateTime fromDateTime(Object value) {
+    if (value is DateTime) return value;
+    if (value is String) return DateTime.parse(value);
     throw InvalidArgumentException(
       'Cannot uncast ${value.runtimeType} to DateTime.',
     );
@@ -300,13 +319,5 @@ class Casts {
     throw InvalidArgumentException(
       'Cannot uncast ${value.runtimeType} to JSON array string.',
     );
-  }
-
-  // ===== internal =====
-
-  static String _isoDate(DateTime d) {
-    final mm = d.month.toString().padLeft(2, '0');
-    final dd = d.day.toString().padLeft(2, '0');
-    return '${d.year.toString().padLeft(4, '0')}-$mm-$dd';
   }
 }

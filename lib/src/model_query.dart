@@ -4,6 +4,7 @@ library;
 import 'package:drift/drift.dart';
 import 'package:meta/meta.dart';
 
+import 'casts/casts.dart';
 import 'companion_builder.dart';
 import 'eloquent.dart';
 import 'exceptions.dart';
@@ -24,6 +25,7 @@ class ModelQuery<T extends Model<T, D>, D extends Object> {
     required this.table,
     required this.creator,
     this.primaryKey = 'id',
+    this.casts = const <String, String>{},
   });
 
   /// The Drift [TableInfo] for this model's table.
@@ -35,21 +37,29 @@ class ModelQuery<T extends Model<T, D>, D extends Object> {
   /// Name of the primary-key column.
   final String primaryKey;
 
+  /// Per-column casts applied before insert. The same names you'd put
+  /// in `Model.$casts` (e.g. `'int'`, `'json'`, `'datetime'`); see
+  /// [CastType]. Route values through `Casts.uncast` so the underlying
+  /// Drift column receives the storage representation.
+  ///
+  /// An empty map (default) skips the cast step — useful for tables
+  /// without a `$casts` registry or for use cases where raw insert is
+  /// preferred.
+  final Map<String, String> casts;
+
   // ===== Terminal helpers =====
 
-  /// All rows in this table.
-  Future<List<T>> all() async {
-    final rows = await Eloquent.db.select(table).get();
-    return rows.map(creator).toList(growable: false);
-  }
+  /// All rows in this table. Soft-deleted rows are excluded when the
+  /// underlying table has a `deleted_at` column — Laravel-style global
+  /// scope.
+  Future<List<T>> all() => query().get();
 
-  /// Find a row by primary-key value, or null if not present.
+  /// Find a row by primary-key value, or null if not present or
+  /// soft-deleted.
   Future<T?> find(Object id) async {
-    final stmt = Eloquent.db.select(table)
-      ..where((_) => _pkColumn().equals(id))
-      ..limit(1);
-    final row = await stmt.getSingleOrNull();
-    return row == null ? null : creator(row);
+    return query()
+        .where(primaryKey, id)
+        .first();
   }
 
   /// Like [find] but throws [ModelNotFoundException] when no row matches.
@@ -65,56 +75,45 @@ class ModelQuery<T extends Model<T, D>, D extends Object> {
   }
 
   /// First row ordered by [orderBy] (defaults to [primaryKey] ascending).
-  /// Returns null if the table is empty.
+  /// Returns null if the table is empty or all rows are soft-deleted.
   Future<T?> first({String? orderBy}) async {
-    final stmt = Eloquent.db.select(table);
     final col = orderBy ?? primaryKey;
-    stmt.orderBy([(_) => OrderingTerm(expression: _colByName(col))]);
-    stmt.limit(1);
-    final row = await stmt.getSingleOrNull();
-    return row == null ? null : creator(row);
+    final stmt = query()
+      ..orderBy(col)
+      ..limit(1);
+    return stmt.getSingleOrNull();
   }
 
-  /// Total row count.
-  Future<int> count() async {
-    final row = await Eloquent.db
-        .customSelect(
-          'SELECT COUNT(*) AS c FROM '
-          '${(table as TableInfo<Table, Object>).actualTableName}',
-          readsFrom: {table},
-        )
-        .getSingle();
-    return row.read<int>('c');
-  }
+  /// Total row count. Excludes soft-deleted rows when the table has a
+  /// `deleted_at` column.
+  Future<int> count() => query().count();
 
-  /// True if the table has any row.
-  Future<bool> exists() async {
-    final c = await count();
-    return c > 0;
-  }
+  /// True if the table has any row (after soft-delete filtering).
+  Future<bool> exists() => query().exists();
 
   /// Reactive variant — emits the current list on listen, then re-emits
   /// on any write that touches [table].
-  Stream<List<T>> watch() {
-    final stmt = Eloquent.db.select(table);
-    return stmt.watch().map(
-          (rows) => rows.map(creator).toList(growable: false),
-        );
-  }
+  Stream<List<T>> watch() => query().watch();
 
   // ===== Writes =====
 
   /// Insert a new row and return the wrapped model instance.
+  ///
+  /// Casts listed in [casts] are applied to incoming values before the
+  /// insert, so callers can pass user-facing types (e.g. `int`, `Map`,
+  /// `DateTime`) and we route them through `Casts.uncast` to whatever
+  /// storage form Drift expects.
   ///
   /// Fires the `created` observer on the freshly-inserted model. Note
   /// that `creating` cannot fire here because the insert has already
   /// happened — to get cancellation support, construct a model with a
   /// blank row and call `Model.save({...values})` instead.
   Future<T> create(Map<String, dynamic> values) async {
+    final prepared = _applyCasts(values);
     final id = await Eloquent.db.into(table).insert(
           CompanionBuilder.fromMap(
             table: table,
-            values: values,
+            values: prepared,
             nullToAbsent: true,
           ),
         );
@@ -124,7 +123,7 @@ class ModelQuery<T extends Model<T, D>, D extends Object> {
       ..where((_) => _pkColumn().equals(id))
       ..limit(1);
     final row = await stmt.getSingle();
-    final model = creator(row);
+    final model = creator(row).wrap(row);
     dispatchVoid('created', model);
     return model;
   }
@@ -139,7 +138,7 @@ class ModelQuery<T extends Model<T, D>, D extends Object> {
         rows.map(
           (m) => CompanionBuilder.fromMap(
             table: table,
-            values: m,
+            values: _applyCasts(m),
             nullToAbsent: true,
           ),
         ),
@@ -160,7 +159,7 @@ class ModelQuery<T extends Model<T, D>, D extends Object> {
     return stmt.write(
       CompanionBuilder.fromMap(
         table: table,
-        values: values,
+        values: _applyCasts(values),
         nullToAbsent: true,
       ),
     );
@@ -269,7 +268,7 @@ class ModelQuery<T extends Model<T, D>, D extends Object> {
       await Eloquent.db.into(table).insertOnConflictUpdate(
         CompanionBuilder.fromMap(
           table: table,
-          values: row,
+          values: _applyCasts(row),
           nullToAbsent: true,
         ),
       );
@@ -318,6 +317,21 @@ class ModelQuery<T extends Model<T, D>, D extends Object> {
   GeneratedColumn<Object> _colByName(String name) =>
       resolveColumn(table as TableInfo<Table, Object>, name);
 
+  /// Apply the [casts] registry to incoming [values]. Mirrors what
+  /// `setAttribute` does on the instance path. Returns a fresh map; the
+  /// input is not mutated.
+  Map<String, dynamic> _applyCasts(Map<String, dynamic> values) {
+    if (casts.isEmpty) return values;
+    final out = Map<String, dynamic>.from(values);
+    out.forEach((key, raw) {
+      if (raw == null) return;
+      final typeName = casts[key];
+      if (typeName == null) return;
+      out[key] = Casts.uncast(raw, typeName);
+    });
+    return out;
+  }
+
   /// Lookup helper: returns the first row matching the k=v predicates in
   /// [attributes]. ANDed together; empty map returns the first row of the
   /// table (matching Laravel's `firstOrCreate([])` semantics).
@@ -336,7 +350,7 @@ class ModelQuery<T extends Model<T, D>, D extends Object> {
     final id = await Eloquent.db.into(table).insert(
           CompanionBuilder.fromMap(
             table: table,
-            values: values,
+            values: _applyCasts(values),
             nullToAbsent: true,
           ),
         );
@@ -344,6 +358,6 @@ class ModelQuery<T extends Model<T, D>, D extends Object> {
       ..where((_) => _pkColumn().equals(id))
       ..limit(1);
     final row = await stmt.getSingle();
-    return creator(row);
+    return creator(row).wrap(row);
   }
 }
