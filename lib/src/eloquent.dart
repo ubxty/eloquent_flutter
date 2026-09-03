@@ -55,6 +55,11 @@ class Eloquent {
 
   /// Execute a raw SQL `SELECT` and return the rows as a list of plain maps.
   ///
+  /// Variables are bound as positional `?` placeholders. A `null` in
+  /// [variables] becomes a SQL `NULL`; non-null values become a bound
+  /// `Variable`. The SQL itself is passed straight to drift — never
+  /// interpolate user input into it. Use `?` placeholders.
+  ///
   /// For reactive streams, use [db.customSelect] directly with a
   /// `readsFrom: {table}` argument.
   static Future<List<Map<String, Object?>>> rawSelect(
@@ -63,9 +68,7 @@ class Eloquent {
   ]) async {
     final rows = await db.customSelect(
       sql,
-      variables: [
-        for (final v in variables) Variable<Object>(v as Object),
-      ],
+      variables: [for (final v in variables) Variable<Object>(v)],
     ).get();
     return rows.map((row) => row.data).toList(growable: false);
   }

@@ -5,7 +5,7 @@ description: >
   belongsToMany), eager loading, observers, pagination, auto timestamps,
   transactions, raw SQL, and reactive streams — all on top of Drift's
   typesafe, reactive SQLite engine.
-version: 0.1.0
+version: 0.2.0
 publish_to: none
 
 environment:

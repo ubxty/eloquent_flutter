@@ -16,6 +16,7 @@
 /// Run with `dart run benchmark/eloquent_vs_drift.dart` from the
 /// package root. The output is plain text — easy to grep and diff
 /// between runs.
+// ignore_for_file: prefer_const_constructors
 library;
 
 import 'dart:io';
@@ -89,14 +90,14 @@ class _Bench {
 void _printResult(String name, Duration el, int iter) {
   final us = el.inMicroseconds / iter;
   print('  ${name.padRight(40)}  ${us.toStringAsFixed(2).padLeft(8)} µs/op'
-      '  (${iter} iters, ${el.inMilliseconds} ms total)');
+      '  ($iter iters, ${el.inMilliseconds} ms total)');
 }
 
 Future<void> _printOverhead(
     String label, Duration w, Duration r, int iter) async {
   final overhead = (w.inMicroseconds / r.inMicroseconds - 1) * 100;
   print('');
-  print('  ${label}');
+  print('  $label');
   _printResult('wrapper', w, iter);
   _printResult('drift (raw)', r, iter);
   print('  ${'overhead'.padRight(40)}  ${overhead.toStringAsFixed(1).padLeft(8)} %');
@@ -308,7 +309,7 @@ Future<void> _benchSave() async {
   final wrapped = _Bench('eloquent: new Widget(...).save()', 1000);
   final wTime = await wrapped.run(() async {
     final w = Widget(
-      WidgetRow(
+      const WidgetRow(
         id: 0,
         name: 'fresh',
         meta: null,

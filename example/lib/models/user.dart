@@ -1,5 +1,5 @@
 /// User model — demonstrates the forwarding-static pattern, relationships,
-/// observer registration, and timestamps.
+/// observer registration, timestamps, casts, and soft deletes.
 library;
 
 import 'package:drift/drift.dart' show TableInfo;
@@ -11,7 +11,8 @@ import 'post.dart';
 import 'profile.dart';
 import 'role.dart';
 
-class User extends Model<User, UserRow> {
+class User extends Model<User, UserRow>
+    with SoftDeletes<User, UserRow>, WithTimestamps {
   User(super.data);
 
   @override
@@ -25,10 +26,32 @@ class User extends Model<User, UserRow> {
         'id': $data.id,
         'email': $data.email,
         'name': $data.name,
+        'phone': $data.phone,
+        'meta': $data.meta,
         'active': $data.active,
         'created_at': $data.createdAt,
         'updated_at': $data.updatedAt,
+        'deleted_at': $data.deletedAt,
       };
+
+  // Per-column cast registry. `meta` round-trips as a JSON object;
+  // the timestamp columns land as DateTime on read.
+  @override
+  Map<String, String> get $casts => const {
+        'active': 'bool',
+        'created_at': 'datetime',
+        'updated_at': 'datetime',
+        'deleted_at': 'datetime',
+        'meta': 'json',
+      };
+
+  // WithTimestamps mixin wants these three abstract members.
+  @override
+  Model get model => this;
+  @override
+  Map<String, dynamic> get modelMap => toMap();
+  @override
+  Future<void> persistTimestamps() async => refresh();
 
   // ===== Relationships =====
 
@@ -82,6 +105,13 @@ class User extends Model<User, UserRow> {
     table: AppRegistry.users,
     creator: User.new,
     primaryKey: 'id',
+    casts: const {
+      'active': 'bool',
+      'created_at': 'datetime',
+      'updated_at': 'datetime',
+      'deleted_at': 'datetime',
+      'meta': 'json',
+    },
   );
 
   static Future<List<User>> all() => _q.all();
@@ -101,4 +131,16 @@ class User extends Model<User, UserRow> {
   ]) =>
       _q.where(c, v, op);
   static QueryBuilder<User, UserRow> query() => _q.query();
+  static QueryBuilder<User, UserRow> withTrashed() => _q.withTrashed();
+  static QueryBuilder<User, UserRow> onlyTrashed() => _q.onlyTrashed();
+  static Future<User> firstOrCreate(
+    Map<String, dynamic> attrs, [
+    Map<String, dynamic> creational = const {},
+  ]) =>
+      _q.firstOrCreate(attrs, creational);
+  static Future<User> updateOrCreate(
+    Map<String, dynamic> attrs,
+    Map<String, dynamic> values,
+  ) =>
+      _q.updateOrCreate(attrs, values);
 }

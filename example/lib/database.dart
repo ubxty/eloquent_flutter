@@ -17,9 +17,12 @@ class Users extends Table {
   IntColumn get id => integer().autoIncrement()();
   TextColumn get email => text().unique()();
   TextColumn get name => text()();
+  TextColumn get phone => text().withDefault(const Constant(''))();
+  TextColumn get meta => text().nullable()();
   BoolColumn get active => boolean().withDefault(const Constant(true))();
   DateTimeColumn get createdAt => dateTime().nullable()();
   DateTimeColumn get updatedAt => dateTime().nullable()();
+  DateTimeColumn get deletedAt => dateTime().nullable()();
 }
 
 /// Posts — hasMany target on User, belongsTo back to User.

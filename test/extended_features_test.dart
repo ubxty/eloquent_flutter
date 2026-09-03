@@ -96,7 +96,7 @@ void main() {
 
     test('update on an unsaved model throws', () async {
       final fresh = Widget(
-        WidgetRow(
+        const WidgetRow(
             id: 0,
             name: 'x',
             meta: null,
@@ -303,7 +303,7 @@ void main() {
   // =====================================================================
   group('observer lifecycle', () {
     test('Model.withoutEvents suppresses all observers', () async {
-      var fired = 0;
+      const fired = 0;
       // No observer attached; the hook just verifies the API works.
       await Model.withoutEvents(() async {
         await Widget.create({'name': 'silent', 'stock': 1});

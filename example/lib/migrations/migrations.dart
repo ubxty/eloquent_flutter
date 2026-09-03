@@ -5,6 +5,7 @@ import 'package:eloquent_flutter/eloquent_flutter.dart';
 
 import 'm_2026_08_31_create_initial.dart';
 import 'm_2026_09_01_add_user_phone.dart';
+import 'm_2026_09_03_add_user_meta_softdeletes.dart';
 
 /// All migrations in the order they should run.
 ///
@@ -13,6 +14,7 @@ import 'm_2026_09_01_add_user_phone.dart';
 List<Migration> allMigrations() => const <Migration>[
       CreateInitialTables(),
       AddUserPhone(),
+      AddUserMetaAndSoftDeletes(),
     ];
 
 /// Run pending migrations against the database currently registered with

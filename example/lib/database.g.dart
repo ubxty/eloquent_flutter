@@ -29,6 +29,18 @@ class $UsersTable extends Users with TableInfo<$UsersTable, UserRow> {
   late final GeneratedColumn<String> name = GeneratedColumn<String>(
       'name', aliasedName, false,
       type: DriftSqlType.string, requiredDuringInsert: true);
+  static const VerificationMeta _phoneMeta = const VerificationMeta('phone');
+  @override
+  late final GeneratedColumn<String> phone = GeneratedColumn<String>(
+      'phone', aliasedName, false,
+      type: DriftSqlType.string,
+      requiredDuringInsert: false,
+      defaultValue: const Constant(''));
+  static const VerificationMeta _metaMeta = const VerificationMeta('meta');
+  @override
+  late final GeneratedColumn<String> meta = GeneratedColumn<String>(
+      'meta', aliasedName, true,
+      type: DriftSqlType.string, requiredDuringInsert: false);
   static const VerificationMeta _activeMeta = const VerificationMeta('active');
   @override
   late final GeneratedColumn<bool> active = GeneratedColumn<bool>(
@@ -50,9 +62,15 @@ class $UsersTable extends Users with TableInfo<$UsersTable, UserRow> {
   late final GeneratedColumn<DateTime> updatedAt = GeneratedColumn<DateTime>(
       'updated_at', aliasedName, true,
       type: DriftSqlType.dateTime, requiredDuringInsert: false);
+  static const VerificationMeta _deletedAtMeta =
+      const VerificationMeta('deletedAt');
+  @override
+  late final GeneratedColumn<DateTime> deletedAt = GeneratedColumn<DateTime>(
+      'deleted_at', aliasedName, true,
+      type: DriftSqlType.dateTime, requiredDuringInsert: false);
   @override
   List<GeneratedColumn> get $columns =>
-      [id, email, name, active, createdAt, updatedAt];
+      [id, email, name, phone, meta, active, createdAt, updatedAt, deletedAt];
   @override
   String get aliasedName => _alias ?? actualTableName;
   @override
@@ -78,6 +96,14 @@ class $UsersTable extends Users with TableInfo<$UsersTable, UserRow> {
     } else if (isInserting) {
       context.missing(_nameMeta);
     }
+    if (data.containsKey('phone')) {
+      context.handle(
+          _phoneMeta, phone.isAcceptableOrUnknown(data['phone']!, _phoneMeta));
+    }
+    if (data.containsKey('meta')) {
+      context.handle(
+          _metaMeta, meta.isAcceptableOrUnknown(data['meta']!, _metaMeta));
+    }
     if (data.containsKey('active')) {
       context.handle(_activeMeta,
           active.isAcceptableOrUnknown(data['active']!, _activeMeta));
@@ -89,6 +115,10 @@ class $UsersTable extends Users with TableInfo<$UsersTable, UserRow> {
     if (data.containsKey('updated_at')) {
       context.handle(_updatedAtMeta,
           updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta));
+    }
+    if (data.containsKey('deleted_at')) {
+      context.handle(_deletedAtMeta,
+          deletedAt.isAcceptableOrUnknown(data['deleted_at']!, _deletedAtMeta));
     }
     return context;
   }
@@ -105,12 +135,18 @@ class $UsersTable extends Users with TableInfo<$UsersTable, UserRow> {
           .read(DriftSqlType.string, data['${effectivePrefix}email'])!,
       name: attachedDatabase.typeMapping
           .read(DriftSqlType.string, data['${effectivePrefix}name'])!,
+      phone: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}phone'])!,
+      meta: attachedDatabase.typeMapping
+          .read(DriftSqlType.string, data['${effectivePrefix}meta']),
       active: attachedDatabase.typeMapping
           .read(DriftSqlType.bool, data['${effectivePrefix}active'])!,
       createdAt: attachedDatabase.typeMapping
           .read(DriftSqlType.dateTime, data['${effectivePrefix}created_at']),
       updatedAt: attachedDatabase.typeMapping
           .read(DriftSqlType.dateTime, data['${effectivePrefix}updated_at']),
+      deletedAt: attachedDatabase.typeMapping
+          .read(DriftSqlType.dateTime, data['${effectivePrefix}deleted_at']),
     );
   }
 
@@ -124,28 +160,41 @@ class UserRow extends DataClass implements Insertable<UserRow> {
   final int id;
   final String email;
   final String name;
+  final String phone;
+  final String? meta;
   final bool active;
   final DateTime? createdAt;
   final DateTime? updatedAt;
+  final DateTime? deletedAt;
   const UserRow(
       {required this.id,
       required this.email,
       required this.name,
+      required this.phone,
+      this.meta,
       required this.active,
       this.createdAt,
-      this.updatedAt});
+      this.updatedAt,
+      this.deletedAt});
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
     final map = <String, Expression>{};
     map['id'] = Variable<int>(id);
     map['email'] = Variable<String>(email);
     map['name'] = Variable<String>(name);
+    map['phone'] = Variable<String>(phone);
+    if (!nullToAbsent || meta != null) {
+      map['meta'] = Variable<String>(meta);
+    }
     map['active'] = Variable<bool>(active);
     if (!nullToAbsent || createdAt != null) {
       map['created_at'] = Variable<DateTime>(createdAt);
     }
     if (!nullToAbsent || updatedAt != null) {
       map['updated_at'] = Variable<DateTime>(updatedAt);
+    }
+    if (!nullToAbsent || deletedAt != null) {
+      map['deleted_at'] = Variable<DateTime>(deletedAt);
     }
     return map;
   }
@@ -155,6 +204,8 @@ class UserRow extends DataClass implements Insertable<UserRow> {
       id: Value(id),
       email: Value(email),
       name: Value(name),
+      phone: Value(phone),
+      meta: meta == null && nullToAbsent ? const Value.absent() : Value(meta),
       active: Value(active),
       createdAt: createdAt == null && nullToAbsent
           ? const Value.absent()
@@ -162,6 +213,9 @@ class UserRow extends DataClass implements Insertable<UserRow> {
       updatedAt: updatedAt == null && nullToAbsent
           ? const Value.absent()
           : Value(updatedAt),
+      deletedAt: deletedAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(deletedAt),
     );
   }
 
@@ -172,9 +226,12 @@ class UserRow extends DataClass implements Insertable<UserRow> {
       id: serializer.fromJson<int>(json['id']),
       email: serializer.fromJson<String>(json['email']),
       name: serializer.fromJson<String>(json['name']),
+      phone: serializer.fromJson<String>(json['phone']),
+      meta: serializer.fromJson<String?>(json['meta']),
       active: serializer.fromJson<bool>(json['active']),
       createdAt: serializer.fromJson<DateTime?>(json['createdAt']),
       updatedAt: serializer.fromJson<DateTime?>(json['updatedAt']),
+      deletedAt: serializer.fromJson<DateTime?>(json['deletedAt']),
     );
   }
   @override
@@ -184,9 +241,12 @@ class UserRow extends DataClass implements Insertable<UserRow> {
       'id': serializer.toJson<int>(id),
       'email': serializer.toJson<String>(email),
       'name': serializer.toJson<String>(name),
+      'phone': serializer.toJson<String>(phone),
+      'meta': serializer.toJson<String?>(meta),
       'active': serializer.toJson<bool>(active),
       'createdAt': serializer.toJson<DateTime?>(createdAt),
       'updatedAt': serializer.toJson<DateTime?>(updatedAt),
+      'deletedAt': serializer.toJson<DateTime?>(deletedAt),
     };
   }
 
@@ -194,25 +254,34 @@ class UserRow extends DataClass implements Insertable<UserRow> {
           {int? id,
           String? email,
           String? name,
+          String? phone,
+          Value<String?> meta = const Value.absent(),
           bool? active,
           Value<DateTime?> createdAt = const Value.absent(),
-          Value<DateTime?> updatedAt = const Value.absent()}) =>
+          Value<DateTime?> updatedAt = const Value.absent(),
+          Value<DateTime?> deletedAt = const Value.absent()}) =>
       UserRow(
         id: id ?? this.id,
         email: email ?? this.email,
         name: name ?? this.name,
+        phone: phone ?? this.phone,
+        meta: meta.present ? meta.value : this.meta,
         active: active ?? this.active,
         createdAt: createdAt.present ? createdAt.value : this.createdAt,
         updatedAt: updatedAt.present ? updatedAt.value : this.updatedAt,
+        deletedAt: deletedAt.present ? deletedAt.value : this.deletedAt,
       );
   UserRow copyWithCompanion(UsersCompanion data) {
     return UserRow(
       id: data.id.present ? data.id.value : this.id,
       email: data.email.present ? data.email.value : this.email,
       name: data.name.present ? data.name.value : this.name,
+      phone: data.phone.present ? data.phone.value : this.phone,
+      meta: data.meta.present ? data.meta.value : this.meta,
       active: data.active.present ? data.active.value : this.active,
       createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
       updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+      deletedAt: data.deletedAt.present ? data.deletedAt.value : this.deletedAt,
     );
   }
 
@@ -222,16 +291,19 @@ class UserRow extends DataClass implements Insertable<UserRow> {
           ..write('id: $id, ')
           ..write('email: $email, ')
           ..write('name: $name, ')
+          ..write('phone: $phone, ')
+          ..write('meta: $meta, ')
           ..write('active: $active, ')
           ..write('createdAt: $createdAt, ')
-          ..write('updatedAt: $updatedAt')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('deletedAt: $deletedAt')
           ..write(')'))
         .toString();
   }
 
   @override
-  int get hashCode =>
-      Object.hash(id, email, name, active, createdAt, updatedAt);
+  int get hashCode => Object.hash(
+      id, email, name, phone, meta, active, createdAt, updatedAt, deletedAt);
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
@@ -239,50 +311,68 @@ class UserRow extends DataClass implements Insertable<UserRow> {
           other.id == this.id &&
           other.email == this.email &&
           other.name == this.name &&
+          other.phone == this.phone &&
+          other.meta == this.meta &&
           other.active == this.active &&
           other.createdAt == this.createdAt &&
-          other.updatedAt == this.updatedAt);
+          other.updatedAt == this.updatedAt &&
+          other.deletedAt == this.deletedAt);
 }
 
 class UsersCompanion extends UpdateCompanion<UserRow> {
   final Value<int> id;
   final Value<String> email;
   final Value<String> name;
+  final Value<String> phone;
+  final Value<String?> meta;
   final Value<bool> active;
   final Value<DateTime?> createdAt;
   final Value<DateTime?> updatedAt;
+  final Value<DateTime?> deletedAt;
   const UsersCompanion({
     this.id = const Value.absent(),
     this.email = const Value.absent(),
     this.name = const Value.absent(),
+    this.phone = const Value.absent(),
+    this.meta = const Value.absent(),
     this.active = const Value.absent(),
     this.createdAt = const Value.absent(),
     this.updatedAt = const Value.absent(),
+    this.deletedAt = const Value.absent(),
   });
   UsersCompanion.insert({
     this.id = const Value.absent(),
     required String email,
     required String name,
+    this.phone = const Value.absent(),
+    this.meta = const Value.absent(),
     this.active = const Value.absent(),
     this.createdAt = const Value.absent(),
     this.updatedAt = const Value.absent(),
+    this.deletedAt = const Value.absent(),
   })  : email = Value(email),
         name = Value(name);
   static Insertable<UserRow> custom({
     Expression<int>? id,
     Expression<String>? email,
     Expression<String>? name,
+    Expression<String>? phone,
+    Expression<String>? meta,
     Expression<bool>? active,
     Expression<DateTime>? createdAt,
     Expression<DateTime>? updatedAt,
+    Expression<DateTime>? deletedAt,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
       if (email != null) 'email': email,
       if (name != null) 'name': name,
+      if (phone != null) 'phone': phone,
+      if (meta != null) 'meta': meta,
       if (active != null) 'active': active,
       if (createdAt != null) 'created_at': createdAt,
       if (updatedAt != null) 'updated_at': updatedAt,
+      if (deletedAt != null) 'deleted_at': deletedAt,
     });
   }
 
@@ -290,16 +380,22 @@ class UsersCompanion extends UpdateCompanion<UserRow> {
       {Value<int>? id,
       Value<String>? email,
       Value<String>? name,
+      Value<String>? phone,
+      Value<String?>? meta,
       Value<bool>? active,
       Value<DateTime?>? createdAt,
-      Value<DateTime?>? updatedAt}) {
+      Value<DateTime?>? updatedAt,
+      Value<DateTime?>? deletedAt}) {
     return UsersCompanion(
       id: id ?? this.id,
       email: email ?? this.email,
       name: name ?? this.name,
+      phone: phone ?? this.phone,
+      meta: meta ?? this.meta,
       active: active ?? this.active,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
+      deletedAt: deletedAt ?? this.deletedAt,
     );
   }
 
@@ -315,6 +411,12 @@ class UsersCompanion extends UpdateCompanion<UserRow> {
     if (name.present) {
       map['name'] = Variable<String>(name.value);
     }
+    if (phone.present) {
+      map['phone'] = Variable<String>(phone.value);
+    }
+    if (meta.present) {
+      map['meta'] = Variable<String>(meta.value);
+    }
     if (active.present) {
       map['active'] = Variable<bool>(active.value);
     }
@@ -323,6 +425,9 @@ class UsersCompanion extends UpdateCompanion<UserRow> {
     }
     if (updatedAt.present) {
       map['updated_at'] = Variable<DateTime>(updatedAt.value);
+    }
+    if (deletedAt.present) {
+      map['deleted_at'] = Variable<DateTime>(deletedAt.value);
     }
     return map;
   }
@@ -333,9 +438,12 @@ class UsersCompanion extends UpdateCompanion<UserRow> {
           ..write('id: $id, ')
           ..write('email: $email, ')
           ..write('name: $name, ')
+          ..write('phone: $phone, ')
+          ..write('meta: $meta, ')
           ..write('active: $active, ')
           ..write('createdAt: $createdAt, ')
-          ..write('updatedAt: $updatedAt')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('deletedAt: $deletedAt')
           ..write(')'))
         .toString();
   }
@@ -1193,17 +1301,23 @@ typedef $$UsersTableCreateCompanionBuilder = UsersCompanion Function({
   Value<int> id,
   required String email,
   required String name,
+  Value<String> phone,
+  Value<String?> meta,
   Value<bool> active,
   Value<DateTime?> createdAt,
   Value<DateTime?> updatedAt,
+  Value<DateTime?> deletedAt,
 });
 typedef $$UsersTableUpdateCompanionBuilder = UsersCompanion Function({
   Value<int> id,
   Value<String> email,
   Value<String> name,
+  Value<String> phone,
+  Value<String?> meta,
   Value<bool> active,
   Value<DateTime?> createdAt,
   Value<DateTime?> updatedAt,
+  Value<DateTime?> deletedAt,
 });
 
 class $$UsersTableFilterComposer extends Composer<_$AppDatabase, $UsersTable> {
@@ -1223,6 +1337,12 @@ class $$UsersTableFilterComposer extends Composer<_$AppDatabase, $UsersTable> {
   ColumnFilters<String> get name => $composableBuilder(
       column: $table.name, builder: (column) => ColumnFilters(column));
 
+  ColumnFilters<String> get phone => $composableBuilder(
+      column: $table.phone, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<String> get meta => $composableBuilder(
+      column: $table.meta, builder: (column) => ColumnFilters(column));
+
   ColumnFilters<bool> get active => $composableBuilder(
       column: $table.active, builder: (column) => ColumnFilters(column));
 
@@ -1231,6 +1351,9 @@ class $$UsersTableFilterComposer extends Composer<_$AppDatabase, $UsersTable> {
 
   ColumnFilters<DateTime> get updatedAt => $composableBuilder(
       column: $table.updatedAt, builder: (column) => ColumnFilters(column));
+
+  ColumnFilters<DateTime> get deletedAt => $composableBuilder(
+      column: $table.deletedAt, builder: (column) => ColumnFilters(column));
 }
 
 class $$UsersTableOrderingComposer
@@ -1251,6 +1374,12 @@ class $$UsersTableOrderingComposer
   ColumnOrderings<String> get name => $composableBuilder(
       column: $table.name, builder: (column) => ColumnOrderings(column));
 
+  ColumnOrderings<String> get phone => $composableBuilder(
+      column: $table.phone, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<String> get meta => $composableBuilder(
+      column: $table.meta, builder: (column) => ColumnOrderings(column));
+
   ColumnOrderings<bool> get active => $composableBuilder(
       column: $table.active, builder: (column) => ColumnOrderings(column));
 
@@ -1259,6 +1388,9 @@ class $$UsersTableOrderingComposer
 
   ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
       column: $table.updatedAt, builder: (column) => ColumnOrderings(column));
+
+  ColumnOrderings<DateTime> get deletedAt => $composableBuilder(
+      column: $table.deletedAt, builder: (column) => ColumnOrderings(column));
 }
 
 class $$UsersTableAnnotationComposer
@@ -1279,6 +1411,12 @@ class $$UsersTableAnnotationComposer
   GeneratedColumn<String> get name =>
       $composableBuilder(column: $table.name, builder: (column) => column);
 
+  GeneratedColumn<String> get phone =>
+      $composableBuilder(column: $table.phone, builder: (column) => column);
+
+  GeneratedColumn<String> get meta =>
+      $composableBuilder(column: $table.meta, builder: (column) => column);
+
   GeneratedColumn<bool> get active =>
       $composableBuilder(column: $table.active, builder: (column) => column);
 
@@ -1287,6 +1425,9 @@ class $$UsersTableAnnotationComposer
 
   GeneratedColumn<DateTime> get updatedAt =>
       $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get deletedAt =>
+      $composableBuilder(column: $table.deletedAt, builder: (column) => column);
 }
 
 class $$UsersTableTableManager extends RootTableManager<
@@ -1315,33 +1456,45 @@ class $$UsersTableTableManager extends RootTableManager<
             Value<int> id = const Value.absent(),
             Value<String> email = const Value.absent(),
             Value<String> name = const Value.absent(),
+            Value<String> phone = const Value.absent(),
+            Value<String?> meta = const Value.absent(),
             Value<bool> active = const Value.absent(),
             Value<DateTime?> createdAt = const Value.absent(),
             Value<DateTime?> updatedAt = const Value.absent(),
+            Value<DateTime?> deletedAt = const Value.absent(),
           }) =>
               UsersCompanion(
             id: id,
             email: email,
             name: name,
+            phone: phone,
+            meta: meta,
             active: active,
             createdAt: createdAt,
             updatedAt: updatedAt,
+            deletedAt: deletedAt,
           ),
           createCompanionCallback: ({
             Value<int> id = const Value.absent(),
             required String email,
             required String name,
+            Value<String> phone = const Value.absent(),
+            Value<String?> meta = const Value.absent(),
             Value<bool> active = const Value.absent(),
             Value<DateTime?> createdAt = const Value.absent(),
             Value<DateTime?> updatedAt = const Value.absent(),
+            Value<DateTime?> deletedAt = const Value.absent(),
           }) =>
               UsersCompanion.insert(
             id: id,
             email: email,
             name: name,
+            phone: phone,
+            meta: meta,
             active: active,
             createdAt: createdAt,
             updatedAt: updatedAt,
+            deletedAt: deletedAt,
           ),
           withReferenceMapper: (p0) => p0
               .map((e) => (e.readTable(table), BaseReferences(db, table, e)))
