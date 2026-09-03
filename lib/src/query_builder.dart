@@ -1,6 +1,13 @@
 /// Chainable query builder that implements Drift's [Selectable] surface.
 library;
 
+// ignore_for_file: library_private_types_in_public_api
+// The relation callbacks (`whereHas`, `orWhereHas`, etc.) accept a
+// `QueryBuilder<_AnyModel, Object>` so the helper can build a scratch
+// builder for the subquery without requiring a real model class. The
+// private `_AnyModel` marker is an internal detail of the scratch
+// builder — user code only chains `.where(...)` etc. on it.
+
 import 'dart:async';
 
 import 'package:drift/drift.dart';
@@ -13,6 +20,24 @@ import 'model.dart';
 import 'operators.dart';
 import 'paginator.dart';
 import 'relationships/relationship.dart';
+
+/// Marker model used internally by [QueryBuilder] helpers that don't have a
+/// concrete model class to bind to (e.g. scratch builders for relation
+/// callbacks). Satisfies the `Model<T, Object>` bound without imposing any
+/// real model semantics — it just provides a type to anchor generic
+/// dispatch.
+class _AnyModel extends Model<_AnyModel, Object> {
+  _AnyModel(super.data);
+
+  @override
+  TableInfo<Table, Object> get $table => throw UnimplementedError();
+
+  @override
+  _AnyModel $wrap(Object data) => throw UnimplementedError();
+
+  @override
+  Map<String, dynamic> toMap() => throw UnimplementedError();
+}
 
 /// Metadata describing one relation declared on this builder.
 ///
@@ -255,7 +280,7 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   /// existence check.
   QueryBuilder<T, D> whereHas(
     String relation, [
-    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+    void Function(QueryBuilder<_AnyModel, Object> q)? callback,
   ]) {
     _predicates.add(_buildExistsPredicate(relation, callback));
     return this;
@@ -271,7 +296,7 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   /// subquery via [callback].
   QueryBuilder<T, D> whereDoesntHave(
     String relation, [
-    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+    void Function(QueryBuilder<_AnyModel, Object> q)? callback,
   ]) {
     _predicates.add(_buildNotExistsPredicate(relation, callback));
     return this;
@@ -290,7 +315,7 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   /// OR-flavoured [whereHas].
   QueryBuilder<T, D> orWhereHas(
     String relation, [
-    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+    void Function(QueryBuilder<_AnyModel, Object> q)? callback,
   ]) {
     _orAppend(_buildExistsPredicate(relation, callback));
     return this;
@@ -305,7 +330,7 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   /// OR-flavoured [whereDoesntHave].
   QueryBuilder<T, D> orWhereDoesntHave(
     String relation, [
-    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+    void Function(QueryBuilder<_AnyModel, Object> q)? callback,
   ]) {
     _orAppend(_buildNotExistsPredicate(relation, callback));
     return this;
@@ -957,7 +982,7 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   /// predicate for `whereHas` / `orWhereHas`.
   Expression<bool> _buildExistsPredicate(
     String relation,
-    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+    void Function(QueryBuilder<_AnyModel, Object> q)? callback,
   ) {
     final rel = _requireRelation(relation);
     final relatedTableName = rel.relatedTable.actualTableName;
@@ -976,7 +1001,7 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   /// `whereDoesntHave`.
   Expression<bool> _buildNotExistsPredicate(
     String relation,
-    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+    void Function(QueryBuilder<_AnyModel, Object> q)? callback,
   ) {
     final rel = _requireRelation(relation);
     final relatedTableName = rel.relatedTable.actualTableName;
@@ -1071,17 +1096,16 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   /// matters because Drift's variable-index bookkeeping is per-context.
   String _callbackExtraWhere(
     RelationSpec rel,
-    void Function(QueryBuilder<dynamic, dynamic> q)? callback,
+    void Function(QueryBuilder<_AnyModel, Object> q)? callback,
   ) {
     if (callback == null) return '';
-    // Build a scratch QueryBuilder bound to the related table. We use the
-    // unconstrained `dynamic, dynamic` form so callers don't need a real
-    // model class to chain `.where(...)` against — only the
-    // `RelationSpec.relatedTable` is required.
-    // ignore: type_argument_not_matching_bounds
-    final tempBuilder = QueryBuilder<dynamic, dynamic>(
+    // Build a scratch QueryBuilder bound to the related table. The
+    // marker [_AnyModel] satisfies the `Model<T, Object>` bound without
+    // imposing any real model semantics — only the
+    // `RelationSpec.relatedTable` is required at this layer.
+    final tempBuilder = QueryBuilder<_AnyModel, Object>(
       table: rel.relatedTable,
-      creator: (d) => d,
+      creator: (d) => _AnyModel(d),
       primaryKey: rel.localKey,
     );
     callback(tempBuilder);
