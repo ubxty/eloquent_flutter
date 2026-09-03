@@ -158,7 +158,7 @@ dart run benchmark/eloquent_vs_drift.dart
 ```yaml
 dependencies:
   drift: ^2.18.0
-  eloquent_flutter: ^0.2.0
+  eloquent_flutter: ^0.1.0
 ```
 
 Or for the latest unreleased:

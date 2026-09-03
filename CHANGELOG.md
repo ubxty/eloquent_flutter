@@ -1,9 +1,11 @@
 # Changelog
 
-## 0.2.0 — 2026-09-03
+## 0.1.0 — 2026-09-03
 
-Bug fixes, performance, and feature surface that landed between 0.1.0 and
-the first public release.
+First public release. Chainable Eloquent-style ORM for Flutter and Dart
+on top of Drift: `Model`, `QueryBuilder`, relationships, eager loading,
+observers, pagination, casts, soft deletes, dirty tracking, schema +
+migrations, transactions, raw SQL, reactive streams.
 
 ### Added
 
@@ -100,40 +102,5 @@ SQLite in-memory.
 The wrapper pays for two things it cannot avoid: (a) one extra SELECT
 round-trip to populate auto-incremented / defaulted columns after
 INSERT, and (b) per-instance state (casts, dirty tracking, snapshot).
-The 0.2.0 release brings per-row wrapper overhead down to ~50ns —
-about 5% of drift's own round-trip — by removing redundant work in the
-hot path.
-
-## 0.1.0 — 2026-08-31
-
-Initial implementation.
-
-- `Eloquent` facade with `init`, `db`, `transaction`, `raw`, `rawSelect`,
-  `dispose`
-- `Model<T, D>` base with `save`, `update`, `delete`, `refresh`
-- `ModelQuery<T, D>` with `all`, `find`, `findOrFail`, `first`, `count`,
-  `exists`, `watch`, `create`, `createMany`
-- `QueryBuilder<T, D>` implementing `Selectable<T>` — chainable `where`
-  (rich operator set), `orWhere`, `whereIn`, `whereNotIn`, `whereNull`,
-  `whereNotNull`, `whereBetween`, `whereRaw`, `orderBy`, `orderByDesc`,
-  `limit`, `offset`, `with_(...)`, `paginate(...)`
-- Relationships: `HasMany`, `HasOne`, `BelongsTo`, `BelongsToMany` (with
-  `attach` / `detach` / `sync`)
-- Eager loading via `with_(...)` against the model's `$relations`
-  registry
-- Lifecycle observers (`ObserverSet`) with cancellation support
-- Auto-timestamp mixin (`WithTimestamps`)
-- `Paginator<T>` with `nextPage` / `previousPage`
-- Exception hierarchy: `EloquentException`, `ColumnNotFoundException`,
-  `TableNotFoundException`, `ModelNotFoundException`,
-  `UnsupportedOperatorException`, `RelationNotFoundException`,
-  `OperationCancelledException`, `InvalidArgumentException`
-- Laravel-style `Schema` facade: `create`, `drop`, `dropUnlessExists`,
-  `table` (alter), `hasTable`, `hasColumn`, `getColumns`, `dropAll`
-- `Blueprint` DSL with column types (`id`, `string`, `text`, `integer`,
-  `real`, `boolean`, `dateTime`, `blob`, `timestamps`), modifiers
-  (`nullable_`, `unique_`, `primary_`, `default_`), constraints
-  (`compositePrimary`, `foreign`, `index`, `unique`), and alter methods
-  (`addColumn`, `dropColumn`, `renameColumn`, `dropIndex`)
-- `Migrator` with `register`, `migrate`, `rollback`, `fresh`, backed by
-  an `_migrations(name, batch)` ledger
+The 0.1.0 release keeps per-row wrapper overhead at ~50ns — about 5% of
+drift's own round-trip — by removing redundant work in the hot path.

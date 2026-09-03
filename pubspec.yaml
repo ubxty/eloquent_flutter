@@ -5,7 +5,7 @@ description: >
   belongsToMany), eager loading, observers, pagination, auto timestamps,
   transactions, raw SQL, and reactive streams — all on top of Drift's
   typesafe, reactive SQLite engine.
-version: 0.2.0
+version: 0.1.0
 homepage: https://github.com/ubxty/eloquent_flutter
 repository: https://github.com/ubxty/eloquent_flutter
 
