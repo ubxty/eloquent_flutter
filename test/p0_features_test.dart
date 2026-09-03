@@ -10,6 +10,7 @@
 ///   * aggregates (min/max/avg/sum)
 ///   * firstOrCreate / updateOrCreate
 ///   * WithTimestamps (created_at/updated_at auto-populate)
+// ignore_for_file: prefer_const_constructors
 library;
 
 import 'package:drift/drift.dart' show TableInfo;
@@ -405,6 +406,26 @@ void main() {
 
     test('sum returns the total', () async {
       expect(await _widgetQuery().sum('stock'), 60);
+    });
+
+    test('soft-deleted rows are excluded from aggregates', () async {
+      // Soft-delete the middle row — it should drop out of every
+      // aggregate. The remaining rows are stock=10 and stock=30.
+      final all = await Widget.all();
+      final middle = all.firstWhere((w) => w.toMap()['stock'] == 20);
+      await middle.delete();
+
+      expect(await _widgetQuery().min('stock'), 10);
+      expect(await _widgetQuery().max('stock'), 30);
+      expect(await _widgetQuery().sum('stock'), 40);
+      expect(await _widgetQuery().avg('stock'), closeTo(20.0, 0.001));
+
+      // withTrashed restores the deleted row to the aggregate set.
+      final q = _widgetQuery()..withTrashed();
+      expect(await q.min('stock'), 10);
+      expect(await q.max('stock'), 30);
+      expect(await q.sum('stock'), 60);
+      expect(await q.avg('stock'), closeTo(20.0, 0.001));
     });
   });
 

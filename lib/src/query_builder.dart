@@ -593,61 +593,93 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   /// be INTEGER-compatible — calling on a REAL column will surface a
   /// SQLite type error. Use [sum] for a `num`-typed aggregate over
   /// numeric columns.
+  ///
+  /// Honors the soft-delete filter (excludes rows where `deleted_at` is
+  /// set on tables that have that column). Use [withTrashed] /
+  /// [onlyTrashed] on this builder to override the default.
   Future<int> min(String column) async {
-    _colByName(column);
-    final stmt = Eloquent.db.customSelect(
-      'SELECT MIN("$column") AS v FROM '
-      '"${(table as TableInfo<Table, Object>).actualTableName}"',
-      readsFrom: {table},
-    );
-    final row = await stmt.getSingle();
-    return row.read<int>('v');
+    return _runAggregateInt('MIN', column);
   }
 
   /// Largest value of [column] across the table. See [min] for column-type
-  /// caveats.
+  /// caveats and soft-delete behavior.
   Future<int> max(String column) async {
+    return _runAggregateInt('MAX', column);
+  }
+
+  /// Arithmetic mean of [column]. Returns `double.nan` if the table is
+  /// empty (SQL AVG over zero rows is NULL). Honors the soft-delete
+  /// filter — see [min].
+  Future<double> avg(String column) async {
+    return (await _runAggregateNum('AVG', column)).toDouble();
+  }
+
+  /// Total of [column] across the table. Returns `0` if the table is
+  /// empty (SQL SUM over zero rows is NULL). Honors the soft-delete
+  /// filter — see [min].
+  Future<num> sum(String column) async {
+    return _runAggregateNum('SUM', column);
+  }
+
+  /// Run an INTEGER-typed aggregate (MIN/MAX) honoring the soft-delete
+  /// filter. Mirrors the fast/slow path structure in [count].
+  Future<int> _runAggregateInt(String fn, String column) async {
     _colByName(column);
+    final tableName = (table as TableInfo<Table, Object>).actualTableName;
+    final trashed = _trashedExpression();
+
+    // Fast path: no soft-delete filter → static SQL, hits the prepared
+    // statement cache every iteration.
+    if (trashed == null) {
+      final stmt = Eloquent.db.customSelect(
+        'SELECT $fn("$column") AS v FROM "$tableName"',
+        readsFrom: {table},
+      );
+      final row = await stmt.getSingle();
+      return row.read<int>('v');
+    }
+
+    // Slow path: combine the soft-delete predicate via GenerationContext.
+    final ctx = GenerationContext.fromDb(Eloquent.db);
+    ctx.buffer.write('SELECT $fn("$column") AS v FROM "$tableName" WHERE ');
+    trashed.writeInto(ctx);
     final stmt = Eloquent.db.customSelect(
-      'SELECT MAX("$column") AS v FROM '
-      '"${(table as TableInfo<Table, Object>).actualTableName}"',
+      ctx.buffer.toString(),
       readsFrom: {table},
     );
     final row = await stmt.getSingle();
     return row.read<int>('v');
   }
 
-  /// Arithmetic mean of [column]. Returns `double.nan` if the table is
-  /// empty (SQL AVG over zero rows is NULL). Reads through `row.data`
-  /// because drift's typed reader for `double?` doesn't decode the
-  /// `REAL` column value drift's customSelect returns for AVG.
-  Future<double> avg(String column) async {
+  /// Run a `num`-typed aggregate (SUM/AVG). Reads through `row.data`
+  /// because the SQL return type is REAL-or-INTEGER and Drift's typed
+  /// reader doesn't decode both cleanly. `null` (empty match set) is
+  /// normalized to `0` to keep callers free of null-handling.
+  Future<num> _runAggregateNum(String fn, String column) async {
     _colByName(column);
-    final stmt = Eloquent.db.customSelect(
-      'SELECT AVG("$column") AS v FROM '
-      '"${(table as TableInfo<Table, Object>).actualTableName}"',
-      readsFrom: {table},
-    );
-    final row = await stmt.getSingle();
-    final v = row.data['v'];
-    return v is num ? v.toDouble() : double.nan;
-  }
+    final tableName = (table as TableInfo<Table, Object>).actualTableName;
+    final trashed = _trashedExpression();
 
-  /// Total of [column] across the table. Returns `0` if the table is
-  /// empty (SQL SUM over zero rows is NULL). Reads through `row.data`
-  /// rather than Drift's typed readers because `num` doesn't round-trip
-  /// cleanly as a primitive — `int` and `double` both decode, and null
-  /// is normalized to `0` here.
-  Future<num> sum(String column) async {
-    _colByName(column);
-    final stmt = Eloquent.db.customSelect(
-      'SELECT SUM("$column") AS v FROM '
-      '"${(table as TableInfo<Table, Object>).actualTableName}"',
+    Future<num> readResult(Selectable<QueryRow> stmt) async {
+      final row = await stmt.getSingle();
+      final v = row.data['v'];
+      return v is num ? v : 0;
+    }
+
+    if (trashed == null) {
+      return readResult(Eloquent.db.customSelect(
+        'SELECT $fn("$column") AS v FROM "$tableName"',
+        readsFrom: {table},
+      ));
+    }
+
+    final ctx = GenerationContext.fromDb(Eloquent.db);
+    ctx.buffer.write('SELECT $fn("$column") AS v FROM "$tableName" WHERE ');
+    trashed.writeInto(ctx);
+    return readResult(Eloquent.db.customSelect(
+      ctx.buffer.toString(),
       readsFrom: {table},
-    );
-    final row = await stmt.getSingle();
-    final v = row.data['v'];
-    return v is num ? v : 0;
+    ));
   }
 
   Future<bool> exists() async {

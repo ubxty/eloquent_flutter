@@ -70,12 +70,13 @@ class Eloquent {
     return rows.map((row) => row.data).toList(growable: false);
   }
 
-  /// Close the database and reset state. Mostly for tests.
+  /// Drop the package's reference to the database. Mostly for tests.
+  ///
+  /// This does **not** close the database — the database is owned by the
+  /// caller, who created it and is responsible for its lifecycle. Closing
+  /// it here would surprise app code that holds a separate reference and
+  /// expects to keep using the database after teardown.
   static Future<void> dispose() async {
-    final instance = _db;
-    if (instance != null) {
-      await instance.close();
-    }
     _db = null;
   }
 }
