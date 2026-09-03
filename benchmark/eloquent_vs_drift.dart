@@ -22,10 +22,16 @@ library;
 import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNull;
+// ignore_for_file: avoid_relative_lib_imports
+// The benchmark file lives at the repo root, not inside `test/`, so it
+// cannot reach `package:eloquent_flutter/src/test_support/test_db.dart`
+// without a relative hop into `lib/`. The schema is private to the
+// package — this is intentional.
+
 import 'package:drift/drift.dart' as d show Value;
 import 'package:drift/native.dart';
 import 'package:eloquent_flutter/eloquent_flutter.dart';
-import 'package:eloquent_flutter/test_support/test_db.dart';
+import '../lib/src/test_support/test_db.dart';
 
 import '../test/p0_features_test.dart' show Widget, TestRegistry;
 

@@ -8,7 +8,7 @@ import 'dart:async';
 
 import 'package:drift/native.dart';
 import 'package:eloquent_flutter/eloquent_flutter.dart';
-import 'package:eloquent_flutter/test_support/test_db.dart';
+import 'package:eloquent_flutter/src/test_support/test_db.dart';
 import 'package:test/test.dart';
 
 import 'p0_features_test.dart' show Widget, TestRegistry;
