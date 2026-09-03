@@ -17,9 +17,12 @@ import 'timestamps.dart';
 /// Each subclass declares its own `D` (the drift row data type) and `T`
 /// (itself, used for covariant return types).
 abstract class Model<T extends Model<T, D>, D extends Object> {
-  Model(this.$data) {
-    _snapshotOriginal();
-  }
+  /// Construct a model wrapping [data]. The snapshot is **not** taken here;
+  /// `_original` is left empty and populated on first call to [getOriginal]
+  /// (lazy) or after [save] / [refresh]. This keeps the constructor cheap
+  /// — important because every fetched row goes through it. Read paths that
+  /// never call `getOriginal` pay nothing for the snapshot machinery.
+  Model(this.$data);
 
   /// The current row data. Re-assign after a save/update to refresh.
   D $data;
@@ -202,7 +205,16 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
 
   /// The value of [key] at the last snapshot. Returns `null` for unknown
   /// columns or unset values.
+  ///
+  /// For a freshly-constructed model that has never been snapshotted
+  /// (i.e. `$original` is empty), falls back to the current `toMap()`
+  /// value — which for an unsaved model equals what the user just typed,
+  /// and for a freshly-loaded row equals the row data the DB returned.
   Object? getOriginal(String key) {
+    if (_original.isEmpty) {
+      _ensureColumnExists(key);
+      return toMap()[key];
+    }
     if (!_original.containsKey(key)) {
       _ensureColumnExists(key);
     }
@@ -385,6 +397,19 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
     return this as T;
   }
 
+  /// Helper used by [ModelQuery.create]: mark a freshly-constructed
+  /// instance as persisted by flipping [$exists] to `true`.
+  ///
+  /// [data] is the same instance the caller just constructed via
+  /// `creator(row)`. The constructor already snapshotted via
+  /// [_snapshotOriginal], so we only need to flip the exists flag — no
+  /// second `$wrap`, no second snapshot. This is a hot path: every read
+  /// goes through it.
+  T wrap(D data) {
+    $exists = true;
+    return this as T;
+  }
+
   // ===== Quiet variants =====
 
   /// Like [save] but no lifecycle observers fire. Useful for seeding and
@@ -432,15 +457,6 @@ abstract class Model<T extends Model<T, D>, D extends Object> {
     } finally {
       setEventsMuted(false);
     }
-  }
-
-  /// Helper used by [ModelQuery.create]: wraps a freshly-inserted row,
-  /// flips [$exists] to true, and takes a baseline snapshot.
-  T wrap(D data) {
-    final wrapped = $wrap(data);
-    wrapped.$exists = true;
-    wrapped._snapshotOriginal();
-    return wrapped;
   }
 
   // ===== internal: column introspection =====

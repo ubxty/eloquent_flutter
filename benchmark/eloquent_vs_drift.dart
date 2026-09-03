@@ -252,7 +252,7 @@ Future<void> _benchAll() async {
 }
 
 // =====================================================================
-// 5) COUNT(*) — wrapper vs raw customSelect.
+// 5) COUNT(*) — wrapper vs raw customSelect with the same WHERE clause.
 // =====================================================================
 
 Future<void> _benchCount() async {
@@ -260,8 +260,9 @@ Future<void> _benchCount() async {
 
   final db = await _seedForCount();
 
-  // Wrapper: QueryBuilder.count() — uses an optimised customSelect under
-  // the hood with the soft-delete filter baked in.
+  // Wrapper: QueryBuilder.count() — emits a static
+  // `SELECT COUNT(*) ... WHERE "deleted_at" IS NULL` when no user
+  // predicates are present, identical to the raw query below.
   final wrapped = _Bench('eloquent: QueryBuilder.count()', 1000);
   final wTime = await wrapped.run(() async {
     await QueryBuilder<Widget, WidgetRow>(
@@ -270,11 +271,14 @@ Future<void> _benchCount() async {
     ).count();
   });
 
-  // Raw drift: customSelect COUNT(*).
-  final raw = _Bench('drift:    customSelect COUNT(*)', 1000);
+  // Raw drift: same SQL — soft-delete predicate included so the
+  // comparison is apples-to-apples.
+  final raw = _Bench(
+      'drift:    customSelect COUNT(*) WHERE deleted_at IS NULL',
+      1000);
   final rTime = await raw.run(() async {
     await db.customSelect(
-      'SELECT COUNT(*) AS c FROM widgets',
+      'SELECT COUNT(*) AS c FROM widgets WHERE "deleted_at" IS NULL',
       readsFrom: {db.widgets},
     ).getSingle();
   });

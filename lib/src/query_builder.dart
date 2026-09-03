@@ -501,27 +501,37 @@ class QueryBuilder<T extends Model<T, Object>, D extends Object>
   }
 
   Future<int> count() async {
-    // Build a `WHERE ...` clause honoring the soft-delete filter plus any
-    // user-supplied predicates so count() agrees with get() (rows that
-    // would be hidden from `get()` are also hidden from `count()`).
     final typed = table as TableInfo<Table, Object>;
+    final tableName = typed.actualTableName;
     final trashed = _trashedExpression();
+
+    // Fast path: no user predicates. Avoid `GenerationContext` entirely
+    // when there's only the optional soft-delete filter — the SQL is
+    // static and SQLite's prepared-statement cache hits every time.
+    if (_predicates.isEmpty) {
+      final sql = trashed == null
+          ? 'SELECT COUNT(*) AS c FROM "$tableName"'
+          : 'SELECT COUNT(*) AS c FROM "$tableName" WHERE "deleted_at" IS NULL';
+      final stmt = Eloquent.db.customSelect(sql, readsFrom: {table});
+      final row = await stmt.getSingle();
+      return row.read<int>('c');
+    }
+
+    // Filtered count: build the WHERE clause via GenerationContext so
+    // the user's predicates (which carry bound variables) are written
+    // out correctly. SQLite caches the prepared statement by SQL text.
     final allPreds = <Expression<bool>>[
       if (trashed != null) trashed,
       ..._predicates,
     ];
-    String? whereSql;
-    if (allPreds.isNotEmpty) {
-      final ctx = GenerationContext.fromDb(Eloquent.db);
-      ctx.buffer.write(' WHERE ');
-      for (var i = 0; i < allPreds.length; i++) {
-        if (i > 0) ctx.buffer.write(' AND ');
-        allPreds[i].writeInto(ctx);
-      }
-      whereSql = ctx.buffer.toString();
+    final ctx = GenerationContext.fromDb(Eloquent.db);
+    ctx.buffer.write('SELECT COUNT(*) AS c FROM "$tableName" WHERE ');
+    for (var i = 0; i < allPreds.length; i++) {
+      if (i > 0) ctx.buffer.write(' AND ');
+      allPreds[i].writeInto(ctx);
     }
     final stmt = Eloquent.db.customSelect(
-      'SELECT COUNT(*) AS c FROM "${typed.actualTableName}"$whereSql',
+      ctx.buffer.toString(),
       readsFrom: {table},
     );
     final row = await stmt.getSingle();
