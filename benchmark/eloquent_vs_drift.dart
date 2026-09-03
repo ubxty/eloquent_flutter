@@ -16,24 +16,20 @@
 /// Run with `dart run benchmark/eloquent_vs_drift.dart` from the
 /// package root. The output is plain text — easy to grep and diff
 /// between runs.
-// ignore_for_file: prefer_const_constructors
+// ignore_for_file: prefer_const_constructors, avoid_relative_lib_imports
+// `tool/` is not a published location; the schema there is for the
+// benchmark + test suite only.
 library;
 
 import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNull;
-// ignore_for_file: avoid_relative_lib_imports
-// The benchmark file lives at the repo root, not inside `test/`, so it
-// cannot reach `package:eloquent_flutter/src/test_support/test_db.dart`
-// without a relative hop into `lib/`. The schema is private to the
-// package — this is intentional.
-
 import 'package:drift/drift.dart' as d show Value;
 import 'package:drift/native.dart';
 import 'package:eloquent_flutter/eloquent_flutter.dart';
-import '../lib/src/test_support/test_db.dart';
 
 import '../test/p0_features_test.dart' show Widget, TestRegistry;
+import '../tool/test_support/test_db.dart';
 
 // =====================================================================
 // Setup — same database + schema as the test suite uses.

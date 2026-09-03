@@ -16,8 +16,9 @@ library;
 import 'package:drift/drift.dart' show TableInfo;
 import 'package:drift/native.dart';
 import 'package:eloquent_flutter/eloquent_flutter.dart';
-import 'package:eloquent_flutter/src/test_support/test_db.dart';
 import 'package:test/test.dart';
+
+import '../tool/test_support/test_db.dart';
 
 // =============================================================================
 // Models.
