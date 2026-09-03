@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1 — 2026-09-03
+
+Shorten `pubspec.yaml` description so it fits the pub.dev 180-char
+guidance and passes the static-analysis check.
+
 ## 0.1.0 — 2026-09-03
 
 First public release. Chainable Eloquent-style ORM for Flutter and Dart
